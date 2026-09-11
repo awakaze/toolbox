@@ -2,7 +2,7 @@
   "TRAE_TOKEN": "",
 
   "CHECKIN_MAX_DELAY": "600",
-  "NOTIFY_ON_SUCCESS": "1",
+  "NOTIFY_ON_SUCCESS": "0",
 
   "SERVERCHAN_KEY": "",
   "BARK_URL": "",
