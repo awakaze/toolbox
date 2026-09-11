@@ -25,7 +25,7 @@ Trae CN (TraeWork) 每日自动签到脚本
 TRAE_TOKEN            单个账号的 access token（必填之一）
 TRAE_TOKENS           多账号，逗号或换行分隔，支持 "名字=token" 格式，例如：
                       主号=eyJxxx,小号=eyJyyy
-CHECKIN_MAX_DELAY     启动后随机延迟秒数上限（默认 0，定时任务建议设 600）
+CHECKIN_MAX_DELAY     启动后随机延迟秒数上限（默认 0，定时任务建议设 300）
 NOTIFY_ON_SUCCESS     成功时是否推送第三方通知，1/0（默认 0）。
                       成功始终弹 Windows 系统通知；第三方（Server酱/TG 等）仅失败时必推
 SERVERCHAN_KEY        Server酱 Turbo 的 SendKey（可选）
