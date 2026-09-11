@@ -1,7 +1,7 @@
 {
   "TRAE_TOKEN": "",
 
-  "CHECKIN_MAX_DELAY": "600",
+  "CHECKIN_MAX_DELAY": "300",
   "NOTIFY_ON_SUCCESS": "0",
 
   "SERVERCHAN_KEY": "",
