@@ -35,7 +35,7 @@
 ```json
 {
   "TRAE_TOKEN": "",
-  "CHECKIN_MAX_DELAY": "600"
+  "CHECKIN_MAX_DELAY": "300"
 }
 ```
 
@@ -78,7 +78,7 @@ schtasks /create /tn "TraeCheckin" /tr "\"C:\你的路径\run_checkin.cmd\"" /sc
 |---|---|---|
 | `TRAE_TOKEN` | 选填 | 手动指定单账号 token；留空则自动读取本机 Trae 登录态 |
 | `TRAE_TOKENS` | 选填 | 多账号，逗号分隔，支持命名：`主号=token1,小号=token2` |
-| `CHECKIN_MAX_DELAY` | 否 | 启动随机延迟上限秒数（默认 0，定时任务建议 600） |
+| `CHECKIN_MAX_DELAY` | 否 | 启动随机延迟上限秒数（默认 0，定时任务建议 300） |
 | `TRAE_RETRIES` | 否 | 失败重试次数（默认 5） |
 | `NOTIFY_ON_SUCCESS` | 否 | 签到成功是否推送**第三方**通知，`1`/`0`（默认 0；成功始终有 Windows 系统通知，第三方仅失败时必推） |
 | `SERVERCHAN_KEY` | 否 | [Server酱](https://sct.ftqq.com/) SendKey，推送到微信 |
@@ -94,7 +94,7 @@ schtasks /create /tn "TraeCheckin" /tr "\"C:\你的路径\run_checkin.cmd\"" /sc
 python3 trae_checkin.py                  # 正常签到
 python3 trae_checkin.py --status-only    # 只查状态，不领取
 python3 trae_checkin.py --retries 10     # 失败最多重试 10 次
-python3 trae_checkin.py --max-delay 600  # 随机延迟 0~10 分钟后开始
+python3 trae_checkin.py --max-delay 300  # 随机延迟 0~5 分钟后开始
 python3 trae_checkin.py --delay 120      # 固定延迟 2 分钟后开始（计划任务触发用）
 python3 trae_checkin.py --no-notify      # 本次不推送通知
 python3 trae_checkin.py -v               # 调试日志（含接口原始响应）
