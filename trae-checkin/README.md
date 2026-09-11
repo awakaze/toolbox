@@ -7,10 +7,11 @@
 - **自动读取本机登录态**：默认从本机已登录的 Trae IDE 直接解密读取 token，无需手动复制（可选装 `pycryptodome`；未装则退回手动配置）
 - **先查后签**：先查询签到状态，已签到自动跳过；领取后自动复查确认到账
 - **限流重试**：针对高峰期服务器限流（code 9074）自动指数退避重试
+- **防风控限额**：每日领取请求最多 10 次（状态查询不计入），跨多次运行累计，超限自动停止
 - **随机延迟**：可配置启动后随机延迟 0~N 分钟，避开整点脚本高峰
 - **多账号**：支持批量签到，按账号逐个处理、汇总结果
-- **通知推送**：Server酱（微信）/ Bark（iOS）/ Telegram / 自定义 Webhook
-- **Windows 桌面弹窗**：签到失败时自动弹出系统气泡通知 + 提示音（零依赖，仅用自带的 PowerShell）
+- **通知推送**：失败时推送 Server酱（微信）/ Bark（iOS）/ Telegram / 自定义 Webhook；TG 自动使用系统代理
+- **Windows 系统通知**：成功/失败都弹系统气泡通知（Windows 默认提示音，零依赖，仅用自带的 PowerShell）
 - **token 有效期检测**：JWT 格式的 token 自动显示剩余天数，临期预警、过期明确报错
 - **安全**：日志中 token 脱敏，请求头与官方客户端行为一致（仅 `Cloud-IDE-JWT` 认证头 + `X-User-Region`）
 
@@ -69,16 +70,6 @@ schtasks /create /tn "TraeCheckin" /tr "\"C:\你的路径\run_checkin.cmd\"" /sc
 
 > 建议避开整点，服务器高峰期容易限流（9074），脚本会自动重试。
 
-## 云端部署（可选）
-
-也可用 GitHub Actions 免服务器运行：
-
-1. 将本目录推送到 GitHub 仓库（`.github/workflows/trae-checkin.yml` 已包含）
-2. 仓库 **Settings → Secrets and variables → Actions** 添加 Secret：`TRAE_TOKEN`
-3. Actions 页面手动 **Run workflow** 验证一次
-
-默认每天北京时间 05:30 自动执行（低峰期 + 随机延迟）。注意：公开仓库 60 天无活动时定时任务会被自动停用，偶尔提交一下保持活跃即可。
-
 ## 配置项说明
 
 配置文件 `config.json` 与环境变量通用（环境变量优先），全部键：
@@ -89,10 +80,10 @@ schtasks /create /tn "TraeCheckin" /tr "\"C:\你的路径\run_checkin.cmd\"" /sc
 | `TRAE_TOKENS` | 选填 | 多账号，逗号分隔，支持命名：`主号=token1,小号=token2` |
 | `CHECKIN_MAX_DELAY` | 否 | 启动随机延迟上限秒数（默认 0，定时任务建议 600） |
 | `TRAE_RETRIES` | 否 | 失败重试次数（默认 5） |
-| `NOTIFY_ON_SUCCESS` | 否 | 签到成功是否推送通知，`1`/`0`（默认 1，失败必推） |
+| `NOTIFY_ON_SUCCESS` | 否 | 签到成功是否推送**第三方**通知，`1`/`0`（默认 0；成功始终有 Windows 系统通知，第三方仅失败时必推） |
 | `SERVERCHAN_KEY` | 否 | [Server酱](https://sct.ftqq.com/) SendKey，推送到微信 |
 | `BARK_URL` | 否 | Bark 推送地址，如 `https://api.day.app/你的key` |
-| `TG_BOT_TOKEN` | 否 | Telegram Bot Token（需配合 `TG_CHAT_ID`） |
+| `TG_BOT_TOKEN` | 否 | Telegram Bot Token（需配合 `TG_CHAT_ID`）；推送自动读取系统代理（环境变量 `HTTPS_PROXY` 优先，其次 Windows 系统代理设置），无代理时直连 |
 | `TG_CHAT_ID` | 否 | Telegram Chat ID |
 | `WEBHOOK_URL` | 否 | 自定义 Webhook，POST JSON `{"title","content"}` |
 | `LOG_FILE` | 否 | 日志文件路径 |
@@ -104,6 +95,7 @@ python3 trae_checkin.py                  # 正常签到
 python3 trae_checkin.py --status-only    # 只查状态，不领取
 python3 trae_checkin.py --retries 10     # 失败最多重试 10 次
 python3 trae_checkin.py --max-delay 600  # 随机延迟 0~10 分钟后开始
+python3 trae_checkin.py --delay 120      # 固定延迟 2 分钟后开始（计划任务触发用）
 python3 trae_checkin.py --no-notify      # 本次不推送通知
 python3 trae_checkin.py -v               # 调试日志（含接口原始响应）
 python3 trae_checkin.py --config /path/to/config.json  # 指定配置文件
@@ -123,7 +115,7 @@ token 有有效期，过期后按上文步骤重新获取一次，更新到 `con
 用 `-v` 参数运行查看接口原始响应，确认 token 是否完整复制（注意不要带上多余空格或换行）。
 
 **Q：签到显示成功但没收到通知？**
-检查通知渠道配置是否完整（如 Telegram 需要同时配 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`）；也可以设 `NOTIFY_ON_SUCCESS=0` 只在失败时接收。
+检查通知渠道配置是否完整（如 Telegram 需要同时配 `TG_BOT_TOKEN` 和 `TG_CHAT_ID`，国内网络需系统代理在线，TG 推送会自动读取）。
 
 ## 文件结构
 
@@ -132,15 +124,15 @@ token 有有效期，过期后按上文步骤重新获取一次，更新到 `con
 ├── trae_checkin.py        # 签到脚本（核心，零依赖）
 ├── config.example.json    # 配置模板（复制为 config.json 使用，config.json 已 gitignore）
 ├── run_checkin.cmd        # Windows 启动器（双击运行）
-├── notify_fail.ps1        # Windows 签到失败弹窗 + 提示音（零依赖）
+├── notify.ps1             # Windows 系统通知（成功 Info / 失败 Error，系统默认提示音，零依赖）
 ├── run_checkin.sh         # macOS / Linux 启动器
-├── TraeCheckin.xml        # Windows 任务计划导入文件（每天 08:00 + 错过补跑）
-└── .github/workflows/     # GitHub Actions 定时任务（可选）
+├── TraeCheckin.xml        # Windows 任务计划导入文件（每天 08:00 + 开机补签，触发后延迟 2 分钟）
+└── .gitignore             # 忽略 config.json / checkin.log 等本地数据
 ```
 
 ## Windows 定时任务（推荐）
 
-用任务计划程序实现每天自动签到，且**电脑错过时间没开机时下次开机自动补签**：
+用任务计划程序实现每天自动签到，内置**四层本地容错**，覆盖电脑没开机、签到被中断、程序卡死等情况：
 
 1. 解压到固定目录（如 `C:\trae-checkin\`），配好 `config.json`
 2. 编辑 `TraeCheckin.xml`，把 `<Command>` 里的路径改成实际的 `run_checkin.cmd` 完整路径
@@ -152,8 +144,20 @@ schtasks /create /tn "TraeCheckin" /xml "C:\trae-checkin\TraeCheckin.xml"
 
 4. 打开"任务计划程序"找到 `TraeCheckin`，右键"运行"测试一次，检查 `checkin.log`
 
-> **开机补签失败弹窗**：任务自带 `StartWhenAvailable`（错过时间下次开机自动补跑），
-> 补签也是走 `run_checkin.cmd`，所以失败时同样会弹出 Windows 气泡通知 + 提示音，提醒你手动处理。
+### 容错机制说明
+
+| 场景 | 保障 |
+|---|---|
+| 到点没开机 | `StartWhenAvailable`：下次开机登录自动补跑 |
+| 08:00 跑到一半断电/关机 | `LogonTrigger`：当天再次开机登录 2 分钟后自动补签（幂等，已签自动跳过） |
+| 程序卡死/异常退出 | `RestartOnFailure`：5 分钟后自动重启，最多 3 次 |
+| 请求被限流（9074） | 脚本指数退避重试（默认 5 次），重试耗尽才判失败 |
+
+所有触发都带 2 分钟延迟（等网络就绪），且受每日 claim 10 次限额保护，多次触发不会造成风控风险。
+签到失败（含重试耗尽）时统一走 `run_checkin.cmd` 的失败通知：系统通知（Error）+ 第三方推送（Server酱/TG 等，TG 自动走系统代理）。
+
+> 本地方案的边界：如果**当天整天**电脑都没开机且没有再次开机补跑的机会，本地无法兜底——
+> 签到积分通常当日有效，次日需手动补签或保持开机习惯。
 
 ## 免责声明
 
