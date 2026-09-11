@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-01-01T08:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Settings>
+    <!-- 错过计划时间（如电脑关机）后，下次开机登录时自动补跑 -->
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <!-- 用电池也照常运行（笔记本友好） -->
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <!-- 部署时改成 run_checkin.cmd 的实际完整路径 -->
+      <Command>C:\trae-checkin\run_checkin.cmd</Command>
+    </Exec>
+  </Actions>
+</Task>

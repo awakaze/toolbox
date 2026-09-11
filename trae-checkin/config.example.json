@@ -1,0 +1,12 @@
+{
+  "TRAE_TOKEN": "",
+
+  "CHECKIN_MAX_DELAY": "600",
+  "NOTIFY_ON_SUCCESS": "1",
+
+  "SERVERCHAN_KEY": "",
+  "BARK_URL": "",
+  "TG_BOT_TOKEN": "",
+  "TG_CHAT_ID": "",
+  "WEBHOOK_URL": ""
+}

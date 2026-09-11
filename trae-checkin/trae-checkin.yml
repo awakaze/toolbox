@@ -1,0 +1,42 @@
+name: Trae Daily Check-in
+
+# 每天在低峰期执行签到（cron 为 UTC 时间）：
+#   '30 21 * * *' = 北京时间 05:30，避开整点高峰，配合随机延迟进一步打散
+# 也可在 Actions 页面手动 Run workflow 触发。
+on:
+  schedule:
+    - cron: '30 21 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Run Trae check-in
+        env:
+          # 必填：在仓库 Settings -> Secrets and variables -> Actions 中配置
+          # 单账号用 TRAE_TOKEN，多账号用 TRAE_TOKENS（格式：主号=token1,小号=token2）
+          TRAE_TOKEN: ${{ secrets.TRAE_TOKEN }}
+          TRAE_TOKENS: ${{ secrets.TRAE_TOKENS }}
+          # 可选：设备标识。不配置则每次运行随机生成，建议配置一次后固定
+          TRAE_MACHINE_ID: ${{ secrets.TRAE_MACHINE_ID }}
+          TRAE_DEVICE_ID: ${{ secrets.TRAE_DEVICE_ID }}
+          # 可选：通知渠道
+          SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
+          BARK_URL: ${{ secrets.BARK_URL }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          # 随机延迟 0~10 分钟，避开高峰期限流
+          CHECKIN_MAX_DELAY: '600'
+          TRAE_RETRIES: '8'
+          NOTIFY_ON_SUCCESS: '1'
+        run: python3 trae_checkin.py --retries "$TRAE_RETRIES" -v
