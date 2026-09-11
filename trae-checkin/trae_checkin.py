@@ -9,6 +9,7 @@ Trae CN (TraeWork) 每日自动签到脚本
   - 单账号 / 多账号批量签到
   - 签到前状态查询，已签到自动跳过，签到后自动复查确认
   - 失败重试（指数退避 + 随机抖动），针对服务器限流（code 9074）做了优化
+  - 每日领取请求上限（默认 10 次/天，状态查询不计入），防止账户被风控
   - 随机延迟启动，避开整点高峰期
   - 通知推送：Server酱 / Bark / Telegram / 自定义 Webhook
   - token 脱敏日志、日志文件、退出码（方便 cron / CI 判断结果）
@@ -25,7 +26,8 @@ TRAE_TOKEN            单个账号的 access token（必填之一）
 TRAE_TOKENS           多账号，逗号或换行分隔，支持 "名字=token" 格式，例如：
                       主号=eyJxxx,小号=eyJyyy
 CHECKIN_MAX_DELAY     启动后随机延迟秒数上限（默认 0，定时任务建议设 600）
-NOTIFY_ON_SUCCESS     成功时是否推送通知，1/0（默认 1）
+NOTIFY_ON_SUCCESS     成功时是否推送第三方通知，1/0（默认 0）。
+                      成功始终弹 Windows 系统通知；第三方（Server酱/TG 等）仅失败时必推
 SERVERCHAN_KEY        Server酱 Turbo 的 SendKey（可选）
 BARK_URL              Bark 推送地址，如 https://api.day.app/xxxxxxxx（可选）
 TG_BOT_TOKEN          Telegram Bot Token（可选，需配合 TG_CHAT_ID）
@@ -79,6 +81,11 @@ CODE_OK = 0
 CODE_UNAUTHORIZED = 1001      # 未认证 / token 失效
 CODE_PARAM_ERROR = 9004       # 参数错误
 CODE_SERVER_BUSY = 9074       # 服务器繁忙 / 限流，需要重试
+
+# 每日领取（claim）请求上限：含所有重试，跨多次运行累计；状态查询不计入。
+# 超出后当天停止发起领取，防止账户被风控。
+CLAIM_DAILY_LIMIT = 10
+CLAIM_STATE_FILE = Path.home() / ".trae-checkin" / "claim_state.json"
 
 log = logging.getLogger("trae-checkin")
 
@@ -351,6 +358,44 @@ def interpret_claim(data: dict) -> str:
     raise ApiError(f"领取失败 code={code}: {message or data}", retryable=True)
 
 
+def load_claim_count() -> int:
+    """读取今日已发起的 claim 请求次数（按日期滚动，跨运行累计）。"""
+    today = time.strftime("%Y-%m-%d")
+    try:
+        data = json.loads(CLAIM_STATE_FILE.read_text(encoding="utf-8"))
+        if data.get("date") == today:
+            return int(data.get("claims", 0))
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        pass
+    return 0
+
+
+def bump_claim_count() -> int:
+    """计数 +1 并持久化；返回累计值。发起请求前调用（无论请求是否成功都算一次）。"""
+    count = load_claim_count() + 1
+    try:
+        CLAIM_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CLAIM_STATE_FILE.write_text(
+            json.dumps({"date": time.strftime("%Y-%m-%d"), "claims": count}),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        log.warning("领取计数写入失败（本次运行内仍有效，不影响签到）: %s", exc)
+    return count
+
+
+def _claim_with_limit(client: TraeClient) -> str:
+    """带每日限额的领取：每次发起 claim 前计数，超限（防风控）则当天停止。"""
+    used = load_claim_count()
+    if used >= CLAIM_DAILY_LIMIT:
+        raise ApiError(
+            f"今日 claim 请求已达上限（{used}/{CLAIM_DAILY_LIMIT} 次，防风控），当天不再发起",
+            retryable=False)
+    log.info("发起领取请求（今日第 %d/%d 次）", used + 1, CLAIM_DAILY_LIMIT)
+    bump_claim_count()
+    return interpret_claim(client.claim())
+
+
 def with_retry(func, retries: int, base_delay: float, desc: str):
     """对可重试错误做指数退避 + 抖动重试。"""
     for attempt in range(1, retries + 2):  # 首次 + retries 次重试
@@ -368,15 +413,53 @@ def with_retry(func, retries: int, base_delay: float, desc: str):
 # --------------------------------------------------------------------------- #
 # 通知
 # --------------------------------------------------------------------------- #
-def _http_post_form(url: str, data: dict) -> None:
+def _get_system_proxy() -> str:
+    """读取系统代理，返回 http://host:port；未找到返回 ''。
+
+    优先级：环境变量 > Windows 注册表（IE/系统代理设置）。
+    """
+    for var in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
+                "HTTP_PROXY", "http_proxy"):
+        val = os.environ.get(var, "").strip()
+        if val:
+            return val if "://" in val else f"http://{val}"
+    if sys.platform == "win32":
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+            enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+            if not enabled:
+                return ""
+            server, _ = winreg.QueryValueEx(key, "ProxyServer")
+            if not server:
+                return ""
+            if "=" not in server:               # 形如 127.0.0.1:7890
+                return f"http://{server}"
+            parts = dict(p.split("=", 1) for p in server.split(";") if "=" in p)
+            target = parts.get("https") or parts.get("http")
+            return f"http://{target}" if target else ""
+        except OSError:                          # 注册表不可读时直连
+            pass
+    return ""
+
+
+def _http_post_form(url: str, data: dict, proxy: str = "") -> bytes:
+    """POST 表单并返回响应体；proxy 非空时通过该代理发送。"""
     req = urllib.request.Request(
         url,
         data=urllib.parse.urlencode(data).encode(),
         method="POST",
         headers={"User-Agent": USER_AGENT},
     )
-    with urllib.request.urlopen(req, timeout=15):
-        pass
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        with opener.open(req, timeout=15) as resp:
+            return resp.read()
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read()
 
 
 def _http_get(url: str) -> None:
@@ -391,8 +474,14 @@ def send_notifications(title: str, content: str) -> None:
 
     key = os.environ.get("SERVERCHAN_KEY", "").strip()
     if key:
-        channels.append(("Server酱", lambda: _http_post_form(
-            f"https://sctapi.ftqq.com/{key}.send", {"title": title, "desp": content})))
+        def _serverchan() -> None:
+            body = _http_post_form(
+                f"https://sctapi.ftqq.com/{key}.send", {"title": title, "desp": content})
+            # Server酱业务失败也返回 HTTP 200，必须检查响应体 code
+            result = json.loads(body.decode("utf-8", errors="replace"))
+            if result.get("code") != 0:
+                raise RuntimeError(f"code={result.get('code')}: {result.get('message', '')}")
+        channels.append(("Server酱", _serverchan))
 
     bark = os.environ.get("BARK_URL", "").strip().rstrip("/")
     if bark:
@@ -402,9 +491,19 @@ def send_notifications(title: str, content: str) -> None:
     tg_token = os.environ.get("TG_BOT_TOKEN", "").strip()
     tg_chat = os.environ.get("TG_CHAT_ID", "").strip()
     if tg_token and tg_chat:
-        channels.append(("Telegram", lambda: _http_post_form(
-            f"https://api.telegram.org/bot{tg_token}/sendMessage",
-            {"chat_id": tg_chat, "text": f"{title}\n\n{content}"})))
+        def _telegram() -> None:
+            # 国内直连 TG 通常不通，自动读取系统代理（环境变量 / Windows 注册表）
+            proxy = _get_system_proxy()
+            if proxy:
+                log.info("Telegram 推送使用系统代理 %s", proxy)
+            body = _http_post_form(
+                f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                {"chat_id": tg_chat, "text": f"{title}\n\n{content}"}, proxy=proxy)
+            # TG 业务失败时 HTTP 也可能是 4xx（已被 urlopen 抛出），这里再校验响应体 ok 字段
+            result = json.loads(body.decode("utf-8", errors="replace"))
+            if not result.get("ok"):
+                raise RuntimeError(f"{result.get('error_code')}: {result.get('description', '')}")
+        channels.append(("Telegram", _telegram))
 
     webhook = os.environ.get("WEBHOOK_URL", "").strip()
     if webhook:
@@ -467,7 +566,7 @@ def process_account(acc: Account, args) -> AccountResult:
             return result
 
         claim_msg = with_retry(
-            lambda: interpret_claim(client.claim()),
+            lambda: _claim_with_limit(client),
             args.retries, args.base_delay, "领取积分")
         log.info("领取结果: %s", claim_msg)
 
@@ -517,17 +616,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--status-only", action="store_true",
                         help="只查询签到状态，不执行领取")
-    parser.add_argument("--retries", type=int,
-                        default=int(os.environ.get("TRAE_RETRIES", "5")),
+    parser.add_argument("--retries", type=int, default=None,
                         help="失败重试次数（默认 5，env: TRAE_RETRIES）")
     parser.add_argument("--base-delay", type=float, default=10.0,
                         help="重试基础间隔秒数，指数退避（默认 10）")
     parser.add_argument("--timeout", type=int, default=15,
                         help="单次请求超时秒数（默认 15）")
-    parser.add_argument("--max-delay", type=int,
-                        default=int(os.environ.get("CHECKIN_MAX_DELAY", "0")),
+    parser.add_argument("--max-delay", type=int, default=None,
                         help="启动后随机延迟上限秒数（默认 0，env: CHECKIN_MAX_DELAY）")
-    parser.add_argument("--log-file", default=os.environ.get("LOG_FILE", ""),
+    parser.add_argument("--delay", type=int, default=0,
+                        help="启动前固定延迟秒数（任务计划触发用，开机补跑建议 120）")
+    parser.add_argument("--log-file", default=None,
                         help="日志文件路径（env: LOG_FILE）")
     parser.add_argument("--config", default="",
                         help="配置文件路径（默认读取脚本同目录的 config.json）")
@@ -538,8 +637,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    setup_logging(args.verbose, args.log_file or None)
+    # 必须先加载 config.json（写入环境变量），再解析依赖 env 的默认值，
+    # 否则配置文件中的 TRAE_RETRIES / CHECKIN_MAX_DELAY / LOG_FILE 不生效
     load_config(args.config or None)
+    if args.retries is None:
+        args.retries = int(os.environ.get("TRAE_RETRIES", "5"))
+    if args.max_delay is None:
+        args.max_delay = int(os.environ.get("CHECKIN_MAX_DELAY", "0"))
+    if args.log_file is None:
+        args.log_file = os.environ.get("LOG_FILE", "")
+    setup_logging(args.verbose, args.log_file or None)
 
     accounts = parse_accounts()
     if not accounts:
@@ -548,6 +655,9 @@ def main(argv: list[str] | None = None) -> int:
                   "复制 api.trae.cn 请求头 Authorization 中 Cloud-IDE-JWT 后面的内容")
         return 2
 
+    if args.delay > 0:
+        log.info("固定延迟 %d 秒后开始签到...", args.delay)
+        time.sleep(args.delay)
     if args.max_delay > 0:
         delay = random.uniform(0, args.max_delay)
         log.info("随机延迟 %.0f 秒以避开高峰期...", delay)
@@ -569,7 +679,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 通知
     if not args.no_notify:
-        notify_on_success = os.environ.get("NOTIFY_ON_SUCCESS", "1") != "0"
+        notify_on_success = os.environ.get("NOTIFY_ON_SUCCESS", "0") != "0"
         if failed or notify_on_success:
             title = "Trae 签到" + ("有失败" if failed else "成功")
             content = "\n".join(
