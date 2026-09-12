@@ -281,7 +281,7 @@ class TraeClient:
     region: str = ""
     timeout: int = 15
 
-    def _post(self, path: str) -> dict:
+    def _post(self, path: str, data: dict | None = None) -> dict:
         url = f"{API_BASE}/{path}"
         headers = {
             "Content-Type": "application/json",
@@ -290,7 +290,8 @@ class TraeClient:
         }
         if self.region:
             headers["X-User-Region"] = self.region
-        req = urllib.request.Request(url, data=b"{}", method="POST", headers=headers)
+        payload = json.dumps(data if data is not None else {}).encode()
+        req = urllib.request.Request(url, data=payload, method="POST", headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
@@ -311,10 +312,12 @@ class TraeClient:
         return data
 
     def status(self) -> dict:
-        return self._post("status")
+        # 对齐官方实现：POST 统一带 req_source（Trae CN=1，SOLO Lite=2）
+        return self._post("status", {"req_source": 1})
 
     def claim(self) -> dict:
-        return self._post("claim")
+        # 领取接口要求 req_source，否则返回 code 9004（订单参数不正确）
+        return self._post("claim", {"req_source": 1})
 
 
 def interpret_status(data: dict) -> tuple[bool | None, bool, str]:
