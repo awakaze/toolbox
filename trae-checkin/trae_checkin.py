@@ -67,6 +67,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -75,6 +76,28 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
+
+# 对齐 Trae 桌面端 claim/status 请求所需的设备与环境头。
+# 通过抓包对比：body 均为 {"req_source":1} 时，脚本仅用固定头会返回 code 9004
+# （订单参数不正确），Trae 客户端因带上这些设备头而成功。其中 x-market-user-id
+# 是本地 machine id（state.vscdb 的 storage.serviceMachineId），x-device-id 是
+# aha 设备注册号；x-request-id 每次请求动态生成。TTNet 的 x-medusa/x-helios/
+# x-neptune 为客户端内置加密头，脚本无法静态复刻，当前未发送。
+CHECKIN_HEADERS = {
+    "x-market-client-id": "VSCode 1.107.1 (Trae CN)",
+    "x-market-user-id": "53c64662-079e-48fc-8db9-2df6bf058916",  # machine id
+    "x-device-id": "3102173737787131",
+    "x-device-brand": "CV15S",
+    "x-device-type": "windows",
+    "x-os-version": "Windows 11 Pro",
+    "x-lgw-req-sdk-type": "3",
+    "x-app-version": "3.3.99",
+    "app-version": "3.3.99",
+    "package-type": "stable_cn",
+    "x-lscbd-aid": "787976",
+    "x-lscbd-platform": "windows",
+    "x-market-user-agent": "VSCode 1.107.1",
+}
 
 # 服务端已知业务码
 CODE_OK = 0
@@ -283,11 +306,13 @@ class TraeClient:
 
     def _post(self, path: str, data: dict | None = None) -> dict:
         url = f"{API_BASE}/{path}"
-        headers = {
+        headers = dict(CHECKIN_HEADERS)
+        headers.update({
             "Content-Type": "application/json",
             "Authorization": f"Cloud-IDE-JWT {self.token}",
             "User-Agent": USER_AGENT,
-        }
+            "x-request-id": f"{uuid.uuid4()}",
+        })
         if self.region:
             headers["X-User-Region"] = self.region
         payload = json.dumps(data if data is not None else {}).encode()
