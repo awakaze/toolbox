@@ -4,3 +4,6 @@ config.json
 
 # 签到日志（本目录运行产生）
 checkin.log
+
+# 每日运行记录（本目录运行产生，按日记录每次运行结果）
+checkin_history.jsonl

@@ -6,12 +6,14 @@
 
 - **自动读取本机登录态**：默认从本机已登录的 Trae IDE 直接解密读取 token，无需手动复制（可选装 `pycryptodome`；未装则退回手动配置）
 - **先查后签**：先查询签到状态，已签到自动跳过；领取后自动复查确认到账
+- **每日运行记录**：本目录 `checkin_history.jsonl` 按日记录每次运行（日期/时间/触发方式/结果/详情）；计划任务重复触发（开机补跑）时若当天已签到成功则**静默跳过**，不发请求、不弹通知
 - **限流重试**：针对高峰期服务器限流（code 9074）自动指数退避重试
 - **防风控限额**：每日领取请求最多 10 次（状态查询不计入），跨多次运行累计，超限自动停止
 - **随机延迟**：可配置启动后随机延迟 0~N 分钟，避开整点脚本高峰
 - **多账号**：支持批量签到，按账号逐个处理、汇总结果
 - **通知推送**：失败时推送 Server酱（微信）/ Bark（iOS）/ Telegram / 自定义 Webhook；TG 自动使用系统代理
-- **Windows 系统通知**：成功/失败都弹系统气泡通知（Windows 默认提示音，零依赖，仅用自带的 PowerShell）
+- **Windows 系统通知**：失败必弹；成功仅**当天首次**成功弹一次，之后的重复触发静默（由脚本以无窗口方式弹出，后台运行不闪黑框，零依赖，仅用自带的 PowerShell）
+- **计划任务后台运行**：定时触发时经 `pythonw` 完全后台运行，无黑窗口、无闪烁（双击手动运行仍保留交互窗口）
 - **token 有效期检测**：JWT 格式的 token 自动显示剩余天数，临期预警、过期明确报错
 - **安全**：日志中 token 脱敏，请求头与官方客户端行为一致（仅 `Cloud-IDE-JWT` 认证头 + `X-User-Region`）
 
@@ -80,7 +82,7 @@ schtasks /create /tn "TraeCheckin" /tr "\"C:\你的路径\run_checkin.cmd\"" /sc
 | `TRAE_TOKENS` | 选填 | 多账号，逗号分隔，支持命名：`主号=token1,小号=token2` |
 | `CHECKIN_MAX_DELAY` | 否 | 启动随机延迟上限秒数（默认 0，定时任务建议 300） |
 | `TRAE_RETRIES` | 否 | 失败重试次数（默认 5） |
-| `NOTIFY_ON_SUCCESS` | 否 | 签到成功是否推送**第三方**通知，`1`/`0`（默认 0；成功始终有 Windows 系统通知，第三方仅失败时必推） |
+| `NOTIFY_ON_SUCCESS` | 否 | 签到成功是否推送**第三方**通知，`1`/`0`（默认 0；Windows 系统通知失败必弹、成功仅当天首次成功弹一次，第三方仅失败时必推） |
 | `SERVERCHAN_KEY` | 否 | [Server酱](https://sct.ftqq.com/) SendKey，推送到微信 |
 | `BARK_URL` | 否 | Bark 推送地址，如 `https://api.day.app/你的key` |
 | `TG_BOT_TOKEN` | 否 | Telegram Bot Token（需配合 `TG_CHAT_ID`）；推送自动读取系统代理（环境变量 `HTTPS_PROXY` 优先，其次 Windows 系统代理设置），无代理时直连 |
@@ -92,10 +94,11 @@ schtasks /create /tn "TraeCheckin" /tr "\"C:\你的路径\run_checkin.cmd\"" /sc
 
 ```bash
 python3 trae_checkin.py                  # 正常签到
-python3 trae_checkin.py --status-only    # 只查状态，不领取
+python3 trae_checkin.py --status-only    # 只查状态，不领取（不写运行记录、不弹通知）
 python3 trae_checkin.py --retries 10     # 失败最多重试 10 次
 python3 trae_checkin.py --max-delay 300  # 随机延迟 0~5 分钟后开始
 python3 trae_checkin.py --delay 120      # 固定延迟 2 分钟后开始（计划任务触发用）
+python3 trae_checkin.py --scheduled      # 计划任务模式：当天已签到成功则静默跳过
 python3 trae_checkin.py --no-notify      # 本次不推送通知
 python3 trae_checkin.py -v               # 调试日志（含接口原始响应）
 python3 trae_checkin.py --config /path/to/config.json  # 指定配置文件
@@ -123,12 +126,24 @@ token 有有效期，过期后按上文步骤重新获取一次，更新到 `con
 .
 ├── trae_checkin.py        # 签到脚本（核心，零依赖）
 ├── config.example.json    # 配置模板（复制为 config.json 使用，config.json 已 gitignore）
-├── run_checkin.cmd        # Windows 启动器（双击运行）
+├── run_checkin.cmd        # Windows 启动器（双击=交互运行；带参数=计划任务后台静默运行）
 ├── notify.ps1             # Windows 系统通知（成功 Info / 失败 Error，系统默认提示音，零依赖）
 ├── run_checkin.sh         # macOS / Linux 启动器
 ├── TraeCheckin.xml        # Windows 任务计划导入文件（每天 08:00 + 开机补签，触发后延迟 2 分钟）
-└── .gitignore             # 忽略 config.json / checkin.log 等本地数据
+└── .gitignore             # 忽略 config.json / checkin.log / checkin_history.jsonl 等本地数据
 ```
+
+运行时产生的本地数据（均不提交）：
+
+- `checkin.log`：运行日志（含 token 脱敏的详细过程）
+- `checkin_history.jsonl`：**每日运行记录**，一行一次运行，示例：
+
+```json
+{"date": "2026-09-14", "time": "08:02:11", "trigger": "scheduled", "result": "success", "detail": "成功 1/1；[OK] 本地登录账号: 签到成功，领取成功 +200 积分"}
+{"date": "2026-09-14", "time": "12:30:05", "trigger": "scheduled", "result": "skip", "detail": "今日已签到成功（本地记录），重复触发静默跳过"}
+```
+
+`result` 取值：`success`（签到成功，含"今日已签到"）/ `fail`（失败，失败通知已弹）/ `skip`（重复触发静默跳过）。`trigger` 取值：`scheduled`（计划任务）/ `manual`（双击手动）。
 
 ## Windows 定时任务（推荐）
 
@@ -149,12 +164,20 @@ schtasks /create /tn "TraeCheckin" /xml "C:\trae-checkin\TraeCheckin.xml"
 | 场景 | 保障 |
 |---|---|
 | 到点没开机 | `StartWhenAvailable`：下次开机登录自动补跑 |
-| 08:00 跑到一半断电/关机 | `LogonTrigger`：当天再次开机登录 2 分钟后自动补签（幂等，已签自动跳过） |
+| 08:00 跑到一半断电/关机 | `LogonTrigger`：当天再次开机登录 2 分钟后自动补签（服务端幂等，已签自动跳过） |
 | 程序卡死/异常退出 | `RestartOnFailure`：5 分钟后自动重启，最多 3 次 |
 | 请求被限流（9074） | 脚本指数退避重试（默认 5 次），重试耗尽才判失败 |
+| 重复触发弹通知扰民 | 本地 `checkin_history.jsonl` 记录当天结果：已成功则后续触发静默跳过 |
 
 所有触发都带 2 分钟延迟（等网络就绪），且受每日 claim 10 次限额保护，多次触发不会造成风控风险。
-签到失败（含重试耗尽）时统一走 `run_checkin.cmd` 的失败通知：系统通知（Error）+ 第三方推送（Server酱/TG 等，TG 自动走系统代理）。
+
+**计划任务触发时的行为**（后台静默模式，`--scheduled`）：
+
+- 启动即检查当天运行记录：已签到成功 → 记一条 `skip` 后静默退出，无窗口、无通知
+- 未签到才执行签到流程，全程经 `pythonw` 后台运行，无黑窗口
+- 结束后：失败必弹系统通知；成功仅当天首次成功弹一次（由脚本无窗口弹出）
+
+签到失败（含重试耗尽）时：系统通知（Error）+ 第三方推送（Server酱/TG 等，TG 自动走系统代理）。
 
 > 本地方案的边界：如果**当天整天**电脑都没开机且没有再次开机补跑的机会，本地无法兜底——
 > 签到积分通常当日有效，次日需手动补签或保持开机习惯。

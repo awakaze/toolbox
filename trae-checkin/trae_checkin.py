@@ -11,6 +11,10 @@ Trae CN (TraeWork) 每日自动签到脚本
   - 失败重试（指数退避 + 随机抖动），针对服务器限流（code 9074）做了优化
   - 每日领取请求上限（默认 10 次/天，状态查询不计入），防止账户被风控
   - 随机延迟启动，避开整点高峰期
+  - 每日运行记录：本目录 checkin_history.jsonl 按日记录每次运行的结果，
+    计划任务重复触发（开机补跑）时若当天已签到成功则静默跳过
+  - Windows 系统通知：失败必弹，成功仅当天首次成功弹一次（脚本自行弹出，
+    后台运行无黑窗口）
   - 通知推送：Server酱 / Bark / Telegram / 自定义 Webhook
   - token 脱敏日志、日志文件、退出码（方便 cron / CI 判断结果）
 
@@ -27,7 +31,8 @@ TRAE_TOKENS           多账号，逗号或换行分隔，支持 "名字=token" 
                       主号=eyJxxx,小号=eyJyyy
 CHECKIN_MAX_DELAY     启动后随机延迟秒数上限（默认 0，定时任务建议设 300）
 NOTIFY_ON_SUCCESS     成功时是否推送第三方通知，1/0（默认 0）。
-                      成功始终弹 Windows 系统通知；第三方（Server酱/TG 等）仅失败时必推
+                      Windows 系统通知：失败必弹，成功仅当天首次成功弹一次；
+                      第三方（Server酱/TG 等）仅失败时必推
 SERVERCHAN_KEY        Server酱 Turbo 的 SendKey（可选）
 BARK_URL              Bark 推送地址，如 https://api.day.app/xxxxxxxx（可选）
 TG_BOT_TOKEN          Telegram Bot Token（可选，需配合 TG_CHAT_ID）
@@ -62,6 +67,7 @@ import json
 import logging
 import os
 import random
+import subprocess
 import sys
 import time
 import urllib.error
@@ -109,6 +115,10 @@ CODE_SERVER_BUSY = 9074       # 服务器繁忙 / 限流，需要重试
 # 超出后当天停止发起领取，防止账户被风控。
 CLAIM_DAILY_LIMIT = 10
 CLAIM_STATE_FILE = Path.home() / ".trae-checkin" / "claim_state.json"
+
+# 每日运行记录（JSONL，每行一次运行）：计划任务重复触发时据此判断当天是否
+# 已签到成功，避免开机补跑重复弹通知；也方便事后按日期回查签到/运行情况。
+HISTORY_FILE = Path(__file__).resolve().parent / "checkin_history.jsonl"
 
 log = logging.getLogger("trae-checkin")
 
@@ -424,6 +434,51 @@ def _claim_with_limit(client: TraeClient) -> str:
     return interpret_claim(client.claim())
 
 
+# --------------------------------------------------------------------------- #
+# 每日运行记录（checkin_history.jsonl，一行一次运行）
+# --------------------------------------------------------------------------- #
+def read_today_history() -> list[dict]:
+    """读取今天的全部运行记录行。"""
+    today = time.strftime("%Y-%m-%d")
+    entries: list[dict] = []
+    try:
+        for line in HISTORY_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("date") == today:
+                entries.append(data)
+    except OSError:
+        pass
+    return entries
+
+
+def today_success_recorded() -> bool:
+    """今天是否已有一次签到成功的运行记录（计划任务重复触发据此静默跳过）。"""
+    return any(e.get("result") == "success" for e in read_today_history())
+
+
+def append_history(result: str, detail: str, trigger: str) -> None:
+    """追加一条运行记录；写入失败只告警，不影响签到主流程。"""
+    entry = {
+        "date": time.strftime("%Y-%m-%d"),
+        "time": time.strftime("%H:%M:%S"),
+        "trigger": trigger,
+        "result": result,
+        "detail": detail,
+    }
+    try:
+        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with HISTORY_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        log.warning("运行记录写入失败（不影响签到）: %s", exc)
+
+
 def with_retry(func, retries: int, base_delay: float, desc: str):
     """对可重试错误做指数退避 + 抖动重试。"""
     for attempt in range(1, retries + 2):  # 首次 + retries 次重试
@@ -554,6 +609,28 @@ def send_notifications(title: str, content: str) -> None:
             log.warning("通知推送失败 [%s]: %s", name, exc)
 
 
+def show_windows_toast(rc: int) -> None:
+    """弹 Windows 系统通知（notify.ps1）；隐藏窗口运行，避免闪黑框。
+
+    通知策略由调用方决定：失败必弹；成功仅当天首次成功弹一次；
+    已签到的重复触发（开机补跑等）不弹。
+    """
+    if sys.platform != "win32":
+        return
+    ps1 = Path(__file__).resolve().with_name("notify.ps1")
+    if not ps1.is_file():
+        return
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-WindowStyle", "Hidden", "-File", str(ps1), "-RC", str(rc)],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        log.warning("Windows 系统通知调用失败: %s", exc)
+
+
 # --------------------------------------------------------------------------- #
 # 主流程
 # --------------------------------------------------------------------------- #
@@ -658,6 +735,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="日志文件路径（env: LOG_FILE）")
     parser.add_argument("--config", default="",
                         help="配置文件路径（默认读取脚本同目录的 config.json）")
+    parser.add_argument("--scheduled", action="store_true",
+                        help="计划任务触发模式：当天已签到成功则静默跳过（本地记录判定）")
     parser.add_argument("--no-notify", action="store_true", help="禁用通知推送")
     parser.add_argument("-v", "--verbose", action="store_true", help="输出调试日志")
     return parser.parse_args(argv)
@@ -676,11 +755,22 @@ def main(argv: list[str] | None = None) -> int:
         args.log_file = os.environ.get("LOG_FILE", "")
     setup_logging(args.verbose, args.log_file or None)
 
+    trigger = "scheduled" if args.scheduled else "manual"
+    first_success_pending = not today_success_recorded()
+
+    # 计划任务重复触发（当天开机补跑等）：本地记录显示今天已签到成功，
+    # 直接静默跳过——不发请求、不弹通知，只把本次触发记入运行记录。
+    if args.scheduled and not first_success_pending:
+        log.info("今日已签到成功（本地运行记录），本次触发静默跳过")
+        append_history("skip", "今日已签到成功（本地记录），重复触发静默跳过", trigger)
+        return 0
+
     accounts = parse_accounts()
     if not accounts:
         log.error("未找到可用账号：本机 Trae IDE 登录态读取失败，且未通过环境变量 TRAE_TOKEN / TRAE_TOKENS 或 config.json 配置")
         log.error("token 获取方式：浏览器登录 https://www.trae.cn ，F12 -> Network -> "
                   "复制 api.trae.cn 请求头 Authorization 中 Cloud-IDE-JWT 后面的内容")
+        append_history("fail", "配置错误：未找到可用账号（token 读取/配置失败）", trigger)
         return 2
 
     if args.delay > 0:
@@ -705,6 +795,15 @@ def main(argv: list[str] | None = None) -> int:
     failed = [r for r in results if not r.ok]
     log.info("成功 %d / %d", len(results) - len(failed), len(results))
 
+    ok = not failed
+    if not args.status_only:
+        append_history(
+            "success" if ok else "fail",
+            f"成功 {len(results) - len(failed)}/{len(results)}；" + "；".join(
+                f"[{'OK' if r.ok else 'FAIL'}] {r.account.name}: {r.detail}"
+                for r in results),
+            trigger)
+
     # 通知
     if not args.no_notify:
         notify_on_success = os.environ.get("NOTIFY_ON_SUCCESS", "0") != "0"
@@ -713,6 +812,10 @@ def main(argv: list[str] | None = None) -> int:
             content = "\n".join(
                 f"{'✅' if r.ok else '❌'} {r.account.name}: {r.detail}" for r in results)
             send_notifications(title, content)
+        # Windows 系统通知：失败必弹；成功仅当天首次成功弹一次；
+        # 重复触发 / --status-only 查询不弹。
+        if not args.status_only and (failed or (ok and first_success_pending)):
+            show_windows_toast(1 if failed else 0)
 
     return 1 if failed else 0
 

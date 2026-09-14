@@ -12,7 +12,7 @@ if ($RC -eq 0) {
     $icon    = [System.Drawing.SystemIcons]::Information
     $tipIcon = 'Info'
     $title   = 'Trae auto check-in done'
-    $content = 'Daily check-in flow completed (already-checked-in is skipped). See checkin.log next to the script for details.'
+    $content = 'Daily check-in flow completed (already-checked-in is skipped). See checkin.log / checkin_history.jsonl next to the script for details.'
 } else {
     $icon    = [System.Drawing.SystemIcons]::Error
     $tipIcon = 'Error'
