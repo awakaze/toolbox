@@ -9,6 +9,7 @@
 | [firefly-music-parser](./firefly-music-parser) | 为 Firefly 博客主题本地音乐模式一键解析音频标签、封面、歌词并生成配置 | Python | requests, mutagen（ffmpeg 可选） |
 | [moe-icp-ids](./moe-icp-ids) | 从萌ICP 分页抓取可认领的萌号（备案号），去重排序后导出文本 | Python | requests |
 | [trae-checkin](./trae-checkin) | Trae CN（TraeWork）每日自动签到领积分，支持本机登录态自动解密、多账号与通知推送 | Python | pycryptodome（可选，纯标准库可跑） |
+| [steam-booster-tool](./steam-booster-tool) | Steam 补充包工具箱，按利润筛选/拉黑/收藏/做包队列，队列游戏每日自动做包（油猴脚本，官方接口+真实手续费） | JavaScript(Tampermonkey) | 无 |
 
 ## 目录约定
 
