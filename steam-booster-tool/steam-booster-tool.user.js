@@ -1,15 +1,18 @@
 // ==UserScript==
-// @name         Steam 补充包工具箱
-// @namespace    toolbox.steam-booster-tool
-// @version      0.2.4
-// @description  按利润筛选补充包，支持拉黑/收藏/做包队列，队列游戏每日自动做包。价格全部走市场搜索接口（普通卡 cardborder_0 / 补充包 item_class_5，精确分值），每游戏 2 个请求；逐卡单独计税后取平均，手续费按卖家到手价精确反解（2025-12 新规最低手续费）；无自动查询，点「查询当前列表」全量实时重查。
-// @author       toolbox
+// @name         Steam 补充包制作助手
+// @namespace    https://github.com/awakaze/
+// @version      0.2.5
+// @description  按宝石做包利润筛选 Steam 补充包，支持拉黑/收藏/做包队列，队列游戏每日自动做包。价格全部走市场搜索接口（普通卡 cardborder_0 / 补充包 item_class_5，精确分值），每游戏 2 个请求；逐卡单独计税后取平均，手续费按卖家到手价精确反解（2025-12 新规最低手续费）；无自动查询，点「查询当前列表」全量实时重查。商店游戏详情页同步显示利润条。
+// @author       awakaze
 // @match        https://steamcommunity.com/tradingcards/boostercreator*
 // @match        https://steamcommunity.com/tradingcards/boostercreator/*
+// @match        https://steamcommunity.com//tradingcards/boostercreator/*
+// @match        https://store.steampowered.com/app/*
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
-// @connect      *
+// @connect      steamcommunity.com
+// @connect      store.steampowered.com
 // @noframes
 // @run-at       document-idle
 // @license      MIT
@@ -929,11 +932,134 @@
     }
 
     // --------------------------------------------------------------------------------
+    // 商店页（store.steampowered.com/app/<id>）：复用同一套分析管线，在左栏顶部注入利润条
+    // --------------------------------------------------------------------------------
+    function storeAppName() {
+        const t = document.querySelector('.apphub_AppName');
+        if (t && t.textContent) { return t.textContent.trim(); }
+        const m = (document.title || '').replace(/\s*::.*$/, '').match(/^(.*?)(?:\s*on Steam|\s*在 Steam 上)?$/);
+        return m && m[1] ? m[1].trim() : '';
+    }
+
+    function initStorePage() {
+        const m = location.pathname.match(/\/app\/(\d+)/);
+        if (!m) { return; }
+        const anchor = document.querySelector('.leftcol.game_description_column');
+        if (!anchor) { setTimeout(initStorePage, 1500); return; }
+        const appid = String(parseInt(m[1], 10));
+        const name = storeAppName();
+        if (document.getElementById('sbt_store_panel')) { return; }
+
+        const panel = el('div', {
+            id: 'sbt_store_panel',
+            style: 'background:rgba(0,0,0,.2);border:1px solid rgba(255,255,255,.1);border-radius:4px;'
+                + 'padding:10px 14px;margin-bottom:14px;font-size:13px;line-height:1.8;color:#c6d4df;'
+        });
+        panel.appendChild(el('div', { style: 'font-weight:600;color:#fff;margin-bottom:2px;' }, 'Steam 补充包制作助手'));
+        const body = el('div', null, '查询中…');
+        panel.appendChild(body);
+        anchor.insertBefore(panel, anchor.firstChild);
+
+        const done = (gemErr) => {
+            const unit = cache.cardInfo[appid] || {};
+            const bInfo = cache.boosterInfo[appid];
+            const st = state[appid] || {};
+            const gems = CARDCOUNT_TO_GEMS[unit.cardCount] || null;
+            const cost = gems ? costPerBooster(gems) : null;
+            const rev = Number.isFinite(unit.cardAvgNet) ? unit.cardAvgNet * 3 : null;
+            const bnet = bInfo && bInfo.lowestSell != null ? sellerNet(bInfo.lowestSell) : null;
+            const rate = (cost !== null && cost > 0 && rev !== null) ? (rev - cost) / cost : null;
+
+            body.textContent = '';
+            const mkVal = (txt, color, title) => {
+                const s = el('span', null, txt);
+                if (color) { s.style.color = color; }
+                if (title) { s.title = title; }
+                return s;
+            };
+            const addRow = (label, val) => {
+                const r = el('div');
+                r.appendChild(el('span', { style: 'color:#8f98a0;display:inline-block;width:110px;' }, label));
+                r.appendChild(val);
+                body.appendChild(r);
+            };
+            const errTip = st.err || '';
+            addRow('卡牌', mkVal(unit.marketable === false ? '不可交易（无在售）' : ((unit.cardCount || '?') + ' 张'), '', errTip));
+            addRow('3卡税后收入', mkVal(
+                rev !== null ? fmtNum(rev) : (errTip ? '失败' : (unit.marketable === false ? '-' : '未查')),
+                rev !== null && cost !== null && rev > cost ? '#e44' : '', errTip
+            ));
+            addRow('做包成本', mkVal(
+                cost !== null ? fmtNum(cost) + '（' + gems + ' 宝石 × ' + fmtNum(effectiveGemPrice()) + '/袋）' : (gemErr ? '宝石价失败' : '-'),
+                '', gemErr ? String(gemErr.message || gemErr) : ''
+            ));
+            addRow('补充包卖价(税后)', mkVal(bnet !== null ? fmtNum(bnet) : (bInfo ? '无在售' : '未查')));
+            addRow('利润率', mkVal(rate !== null ? (rate * 100).toFixed(1) + '%' : '-',
+                rate !== null && rate > 0 ? '#e44' : '#8f98a0'));
+
+            // 链接（与主站查询同源）
+            const links = el('div', { style: 'margin-top:4px;display:flex;gap:14px;flex-wrap:wrap;' });
+            const mkLink = (txt, href) => {
+                const a = el('a', { href, target: '_blank', style: 'color:#66c0f4;' }, txt);
+                links.appendChild(a);
+            };
+            mkLink('卡牌市场', 'https://steamcommunity.com/market/search?category_cardborder=cardborder_0&category_Game=app_' + appid + '&appid=753');
+            mkLink('补充包市场', 'https://steamcommunity.com/market/search?category_item_class=item_class_5&category_Game=app_' + appid + '&appid=753');
+            mkLink('去做包', 'https://steamcommunity.com/tradingcards/boostercreator/');
+            body.appendChild(links);
+
+            // 列表操作（与做包页共用同一份 lists 存储）
+            const actions = el('div', { style: 'margin-top:6px;' });
+            const mkBtn = (span, onClick) => {
+                const a = el('a', { style: 'margin-right:8px;' });
+                a.className = 'btnv6_grey_black btn_medium';
+                a.appendChild(span);
+                a.addEventListener('click', onClick);
+                return a;
+            };
+            const qSpan = el('span', null, '加入队列');
+            const bSpan = el('span', null, '拉黑');
+            const listState = () => {
+                if (lists.queue.indexOf(appid) > -1) { return 'queue'; }
+                if (lists.black.indexOf(appid) > -1) { return 'black'; }
+                return null;
+            };
+            const refresh = () => {
+                const s = listState();
+                qSpan.textContent = s === 'queue' ? '已在队列' : '加入队列';
+                bSpan.textContent = s === 'black' ? '已拉黑' : '拉黑';
+            };
+            actions.appendChild(mkBtn(qSpan, () => {
+                if (listState() === 'queue') { return; }
+                if (listState() === 'black') { operate(appid, 'blackToOut'); }
+                operate(appid, 'outToQueue'); saveLists(); refresh(); toast('已加入做包队列');
+            }));
+            actions.appendChild(mkBtn(bSpan, () => {
+                if (listState() === 'black') { return; }
+                if (listState() === 'queue') { operate(appid, 'queueToOut'); }
+                operate(appid, 'outToBlack'); saveLists(); refresh(); toast('已加入黑名单');
+            }));
+            refresh();
+            body.appendChild(actions);
+        };
+
+        let gemErr = null;
+        loadGemPrice(false).then((p) => { marketGemPrice = p; return p; }).catch((e) => { gemErr = e; return null; })
+            .then(() => analyzeGame({ appid, name }, false))
+            .then(() => done(gemErr))
+            .catch((e) => {
+                body.textContent = '';
+                body.appendChild(el('span', { style: 'color:#e44;' }, '查询失败: ' + String(e && e.message || e)));
+            });
+    }
+
+    // --------------------------------------------------------------------------------
     // 初始化
     // --------------------------------------------------------------------------------
     function init() {
-        if (!initDom()) { console.warn('[sbt] 未找到补充包制作区'); return; }
         loadState();
+        if (location.hostname === 'store.steampowered.com') { initStorePage(); return; }
+        if (!initDom()) { console.warn('[sbt] 未找到补充包制作区'); return; }
         allGames = loadBoosterData();
         if (!allGames.length) {
             // 页面数据可能异步加载，稍后重试
