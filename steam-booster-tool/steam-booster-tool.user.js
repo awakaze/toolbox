@@ -258,7 +258,7 @@
     async function marketSearch(opts) {
         const items = [];
         let total = 0;
-        for (let start = 0, page = 0; page < 6; page++, start = items.length) {
+        for (let start = 0, page = 0; page < 20; page++, start = items.length) {
             const up = new URLSearchParams();
             up.set('start', String(start));
             up.set('count', '10');
@@ -339,11 +339,11 @@
 
     function loadBoosterData() {
         const data = (typeof CBoosterCreatorPage !== 'undefined' && CBoosterCreatorPage.sm_rgBoosterData) || {};
-        // 统一把 appid 规范为字符串，避免 state/cache/lists/forceList 用 String(appid) 作键时对不上
+        // 统一把 appid 规范为字符串，避免 state/cache/lists/forceList 用 String(appid) 作键时对不上；过滤 null 等脏条目
         return Object.values(data).map((g) => {
             if (g && g.appid !== undefined) { return Object.assign({}, g, { appid: String(g.appid) }); }
-            return g;
-        });
+            return null;
+        }).filter(Boolean);
     }
 
     // 页面元素引用与工具
@@ -405,6 +405,13 @@
 
     function operate(appid, type) {
         const a = String(appid);
+        // 多标签页防护：操作前重读存储最新列表，防本页旧快照整包回写覆盖其他页新写入
+        try {
+            const fresh = GM_getValue(KEY_LISTS, null);
+            if (fresh && typeof fresh === 'object') {
+                lists = { queue: fresh.queue || [], collect: fresh.collect || [], black: fresh.black || [], auto: fresh.auto || [] };
+            }
+        } catch (e) { /* 读取失败沿用内存快照 */ }
         // 加入自动列表的公共动作：从其他列表移出 + 清退避/会话标记（重新加入 = 重新开始盯）
         const toAuto = () => {
             arrRemove(lists.queue, a); arrRemove(lists.collect, a); arrRemove(lists.black, a);
@@ -439,6 +446,10 @@
             case 'reset': cache.cardInfo[a] = undefined; saveCache(); break;
             default: return;
         }
+        // 四列表互斥的数据层兜底：appid 只允许存在于一个列表（覆盖商店页不清 collect 等路径）
+        const OWNERS = ['queue', 'collect', 'black', 'auto'];
+        const owner = OWNERS.find((k) => lists[k].indexOf(a) !== -1);
+        if (owner) { OWNERS.forEach((k) => { if (k !== owner) { arrRemove(lists[k], a); } }); }
         if (type !== 'reset') { saveLists(); }
         if (/ToAuto$/.test(type)) { tryImmediateCraft(a); }   // 加入自动列表 → 立即尝试做一次
         render();
@@ -468,11 +479,14 @@
     }
 
     function isAvailable(g) {
-        if (!g.available_at_time) { return true; }          // 无冷却字段 → 可做
-        if (typeof g.available_at_time === 'string' && g.available_at_time.match(/[0-9]/)) {
-            return Date.now() >= new Date(g.available_at_time).getTime(); // 时间戳 → 看是否已过
-        }
-        return false;                                        // 文本状态（冷却中/不可做）
+        const t = g.available_at_time;
+        if (!t) { return true; }                              // 无冷却字段 → 可做
+        // 防御多种数据形态：数字/纯数字字符串（秒级或毫秒级时间戳）/Date 可解析文本
+        let ms;
+        if (typeof t === 'number') { ms = t < 1e12 ? t * 1000 : t; }
+        else if (typeof t === 'string' && /^[0-9]+$/.test(t.trim())) { ms = Number(t) < 1e12 ? Number(t) * 1000 : Number(t); }
+        else { ms = new Date(t).getTime(); if (Number.isNaN(ms)) { return false; } }   // 无法解析 → 按冷却中保守处理
+        return Date.now() >= ms;
     }
 
     function isBannable(g) {
@@ -640,8 +654,8 @@
         return false;
     }
 
-    // 本 tick 可制作候选：在自动列表 ∩ 已到 CD ∩ 未处理完 ∩ 不在退避等待/放弃状态
-    // 放弃/宝石不足的游戏超过 RESUME_AFTER_H 小时后自动恢复监控（无需人工移出重加）
+    // 本 tick 可制作候选（纯查询，无副作用）：自动列表 ∩ 已到 CD ∩ 未处理完 ∩ 不在退避等待/放弃状态
+    // givenUp 超过 RESUME_AFTER_H 视为到期（恢复监控的清理副作用只在 autoTick 中执行）
     function autoCandidates() {
         return allGames.filter((g) => {
             const a = String(g.appid);
@@ -649,9 +663,7 @@
             const r = retryState[a];
             let forceTry = false;
             if (r && r.givenUp) {
-                if (Date.now() - (r.at || 0) < RESUME_AFTER_H * 3600 * 1000) { return false; }
-                dropRetryKey(a); doneSession.delete(a);
-                g._craftFail = false;
+                if (!givenUpExpired(r)) { return false; }
             } else if (r && r.nextTry && Date.now() < r.nextTry) {
                 return false;
             } else if (r && r.nextTry) {
@@ -660,6 +672,10 @@
             if (doneSession.has(a)) { return false; }
             return forceTry || isAvailable(g);
         });
+    }
+
+    function givenUpExpired(r) {
+        return !!(r && r.givenUp && Date.now() - (r.at || 0) >= RESUME_AFTER_H * 3600 * 1000);
     }
 
     // 对单个自动列表游戏执行一次「查价→判定→制作」，返回 {kind:'ok'|'skip'|'fail'|'gems', msg}
@@ -678,6 +694,7 @@
             const gate = shouldCraft(g);
             if (!gate.ok) {
                 if (gate.reason === '无法计算利润') {
+                    if (recalcRunning) { return { kind: 'skip', msg: `${g.name} 手动查询进行中，下轮再试` }; }   // 撞车不误记退避
                     scheduleRetry(a, new Error('无法计算利润（查价失败）'));   // 查价失败可恢复 → 退避
                     return { kind: 'fail', msg: `${g.name} 查价失败退避中` };
                 }
@@ -722,8 +739,17 @@
     // 一次轮询 tick：只处理到点候选；没候选直接返回（零请求、零通知）
     async function autoTick() {
         if (autoTickRunning) { return; }
+        if (!Number.isFinite(effectiveGemPrice())) { setStatus('自动做包：宝石价未知（无缓存且获取失败），本轮跳过'); return; }   // 防全量"无法计算利润"级联退避
         const cands = autoCandidates();
         if (!cands.length) { return; }
+        // 执行 24h 到期放弃状态的恢复清理（渲染用的 autoCandidates 保持纯查询）
+        cands.forEach((g) => {
+            const a = String(g.appid);
+            if (givenUpExpired(retryState[a])) {
+                dropRetryKey(a); doneSession.delete(a);
+                g._craftFail = false;
+            }
+        });
         autoTickRunning = true;
         const batch = cands.slice(0, MAX_BATCH);
         setStatus(`自动做包：${cands.length} 个游戏到点，开始处理${cands.length > MAX_BATCH ? `（本批 ${batch.length}，其余下轮）` : '…'}`);
@@ -768,9 +794,11 @@
         });
     }
 
+    let pollTimer = null;
     function startAutoPoll() {
         const min = Math.max(1, Number(config.pollInterval_min) || 10);
-        setInterval(() => { if (config.autoPoll) { autoTick(); } }, min * 60 * 1000);
+        if (pollTimer) { clearInterval(pollTimer); }   // 修改间隔后重启定时器，无需刷新页面
+        pollTimer = setInterval(() => { if (config.autoPoll) { autoTick(); } }, min * 60 * 1000);
     }
 
     // --------------------------------------------------------------------------------
@@ -899,7 +927,10 @@
         const pollItv = el('input', { type: 'number', min: 1, value: config.pollInterval_min, style: 'width:40px;' });
         pollItv.addEventListener('change', () => {
             const v = parseInt(pollItv.value, 10);
-            if (!Number.isNaN(v) && v >= 1) { config.pollInterval_min = v; saveConfig(); }
+            if (!Number.isNaN(v) && v >= 1) {
+                config.pollInterval_min = v; saveConfig();
+                startAutoPoll();   // 立即按新间隔重启轮询
+            }
         });
         const secAuto = section('自动做包');
         secAuto.appendChild(row([
@@ -1061,6 +1092,10 @@
             forceChk.addEventListener('change', () => {
                 if (forceChk.checked) { config.forceList[aKey] = 1; } else { delete config.forceList[aKey]; }
                 saveConfig();
+                if (forceChk.checked) {
+                    doneSession.delete(aKey);   // 清会话标记，勾"强制"后本会话立即重新评估（不等刷新）
+                    if (config.autoPoll) { autoTick(); }
+                }
             });
             forceTd.appendChild(forceChk);
             tr.appendChild(forceTd);
