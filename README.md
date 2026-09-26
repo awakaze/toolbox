@@ -10,6 +10,7 @@
 | [moe-icp-ids](./moe-icp-ids) | 从萌ICP 分页抓取可认领的萌号（备案号），去重排序后导出文本 | Python | requests |
 | [trae-checkin](./trae-checkin) | Trae CN（TraeWork）每日自动签到领积分，支持本机登录态自动解密、多账号与通知推送 | Python | pycryptodome（可选，纯标准库可跑） |
 | [steam-booster-tool](./steam-booster-tool) | Steam 补充包工具箱，按利润筛选/拉黑/收藏/做包队列，队列游戏每日自动做包（油猴脚本，官方接口+真实手续费） | JavaScript(Tampermonkey) | 无 |
+| [tuzhong-split](./tuzhong-split) | 图种分离工具，把图片+压缩包的合并文件按特征码拆回图片和压缩包两个文件 | Python | 无（纯标准库） |
 
 ## 目录约定
 
