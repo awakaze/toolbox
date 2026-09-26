@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Steam 补充包制作助手
 // @namespace    https://github.com/awakaze/
-// @version      0.3.0
+// @version      0.3.1
 // @description  按宝石做包利润筛选 Steam 补充包，支持拉黑/收藏/做包队列/自动做包列表。自动列表由「自动做包」开关控制，轮询盯冷却到点自动制作（可配置间隔）：到点实时查价过利润闸门（"强制"可绕过）后制作，成功/失败按批次系统通知，宝石不足立即通知，可恢复错误退避重试。价格全部走市场搜索接口（普通卡 cardborder_0 / 补充包 item_class_5，精确分值），每游戏 2 个请求；逐卡单独计税后取平均，手续费按卖家到手价精确反解（2025-12 手续费新规）。商店游戏详情页同步显示利润条。
 // @author       awakaze
 // @match        https://steamcommunity.com/tradingcards/boostercreator*
@@ -136,7 +136,19 @@
     }
     function saveConfig() { GM_setValue(KEY_CONFIG, config); }
     function saveLists() { GM_setValue(KEY_LISTS, lists); }
-    function saveCache() { GM_setValue(KEY_CACHE, cache); }
+    function saveCache() {
+        // 防多标签页旧快照整包覆盖：history 取并集（保住其他页新写入的制作记录），cardInfo/boosterInfo 本页优先（本页查价最新）
+        try {
+            const fresh = GM_getValue(KEY_CACHE, null);
+            if (fresh && typeof fresh === 'object') {
+                cache.history = Object.assign({}, fresh.history, cache.history);
+                cache.cardInfo = Object.assign({}, fresh.cardInfo, cache.cardInfo);
+                cache.boosterInfo = Object.assign({}, fresh.boosterInfo, cache.boosterInfo);
+                if (fresh.gemPrice && (!cache.gemPrice || !cache.gemPrice.price)) { cache.gemPrice = fresh.gemPrice; }
+            }
+        } catch (e) { /* 读取失败按普通整包写 */ }
+        GM_setValue(KEY_CACHE, cache);
+    }
     function saveRetry() { GM_setValue(KEY_RETRY, retryState); }
 
     // 删除单个游戏的退避状态：先删内存，再基于存储最新快照删键回写（防多标签页用旧快照覆盖新状态）
@@ -478,15 +490,45 @@
         return m ? m[1] : '';
     }
 
+    // 解析冷却字段为毫秒时间戳；0=无冷却，-1=无法解析。兼容数字/秒级/毫秒级/Date 可解析文本
+    function availMs(t) {
+        if (!t) { return 0; }
+        if (typeof t === 'number') { return t < 1e12 ? t * 1000 : t; }
+        if (typeof t === 'string' && /^[0-9]+$/.test(t.trim())) { const n = Number(t); return n < 1e12 ? n * 1000 : n; }
+        const ms = new Date(t).getTime();
+        return Number.isNaN(ms) ? -1 : ms;
+    }
+
     function isAvailable(g) {
-        const t = g.available_at_time;
-        if (!t) { return true; }                              // 无冷却字段 → 可做
-        // 防御多种数据形态：数字/纯数字字符串（秒级或毫秒级时间戳）/Date 可解析文本
-        let ms;
-        if (typeof t === 'number') { ms = t < 1e12 ? t * 1000 : t; }
-        else if (typeof t === 'string' && /^[0-9]+$/.test(t.trim())) { ms = Number(t) < 1e12 ? Number(t) * 1000 : Number(t); }
-        else { ms = new Date(t).getTime(); if (Number.isNaN(ms)) { return false; } }   // 无法解析 → 按冷却中保守处理
+        const ms = availMs(g.available_at_time);
+        if (!ms) { return true; }          // 无冷却字段 → 可做
+        if (ms < 0) { return false; }      // 无法解析 → 按冷却中保守处理
         return Date.now() >= ms;
+    }
+
+    // 时间显示：当天只显 HH:mm，跨天显 M/D HH:mm
+    function fmtHM(ts) {
+        const d = new Date(ts);
+        if (Number.isNaN(d.getTime())) { return '?'; }
+        const hm = d.toTimeString().slice(0, 5);
+        return d.toDateString() === new Date().toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+    }
+
+    // 失败详情提示：失败原因（退避中/放弃/宝石不足）+ CD 截至时间（回答"是不是 CD 没到"）
+    function craftFailDetail(g) {
+        const a = String(g.appid);
+        const r = retryState[a];
+        const parts = [];
+        if (r && r.givenUp) {
+            parts.push(r.reason === '宝石不足' ? '宝石不足·已暂停（勾选开关恢复）' : `连续失败已放弃，${RESUME_AFTER_H}h 后自动恢复`);
+        } else if (r && r.nextTry) {
+            parts.push(`退避中·${fmtHM(r.nextTry)} 重试`);
+        }
+        if (r && r.reason && r.reason !== '宝石不足') { parts.push(String(r.reason).slice(0, 50)); }
+        const ms = availMs(g.available_at_time);
+        if (ms > 0 && Date.now() < ms) { parts.push(`CD 未到，${fmtHM(ms)} 可做`); }
+        else if (ms === -1) { parts.push('冷却数据无法解析'); }
+        return parts.join('；');
     }
 
     function isBannable(g) {
@@ -550,9 +592,12 @@
             }
             throw err;
         }
-        // 成功响应带 purchaseid；Steam 也可能返回错误 JSON（如冷却中/宝石不足），一并视为失败
+        // 成功响应形如 {"purchase_result":{"purchaseid":"...","success":1,...},"goo_amount":"..."}；
+        // 无 purchase_result 的 JSON（冷却中/宝石不足等错误）一并视为失败
         const j = safeJSON(res.responseText);
-        if (!j || !j.purchaseid) {
+        const purchaseId = j && j.purchase_result && j.purchase_result.purchaseid;
+        if (!j || !purchaseId) {
+            console.warn('[sbt] 制作响应未含 purchase_result（原样记录以便诊断）:', res.status, String(res.responseText).slice(0, 300));
             const text = typeof res.responseText === 'string' ? res.responseText : '';
             const err = new Error('响应异常: ' + describeRes(res));
             // 实测：宝石不足返回 HTTP 500 + {"purchase_eresult":78,"goo_amount":"112",...}
@@ -727,7 +772,7 @@
                 // 退避等待期间不通知；退避用尽（放弃）只通知这一次
                 sysNotify('自动做包失败', `${g.name} 连续失败 ${BACKOFF_MIN.length + 1} 次（${String(e.message || e).slice(0, 80)}）。${RESUME_AFTER_H} 小时后自动恢复监控`);
             }
-            return { kind: 'fail', msg: `${g.name} ${gave ? '失败放弃' : '失败（退避中）'}` };
+            return { kind: 'fail', msg: `${g.name} ${gave ? '失败放弃' : '失败'}（${craftFailDetail(g) || String(e.message || e).slice(0, 50)}）` };
         } finally {
             inFlightCraft.delete(a);
         }
@@ -1049,6 +1094,16 @@
             const statusTd = el('td', { style: 'padding:4px;' }, statusOf(g));
             if (statusOf(g) === '可制作') { statusTd.style.color = '#a4d007'; }
             else if (statusOf(g) === '冷却中') { statusTd.style.color = '#8f98a0'; }
+            else if (g._craftFail || retryState[String(g.appid)]) {   // 失败/退避/放弃状态跨刷新可见（不只看会话标记）
+                const det = craftFailDetail(g);
+                if (det) {
+                    statusTd.title = det;
+                    const d = document.createElement('div');
+                    d.style.cssText = 'font-size:10px;color:#d98032;max-width:150px;white-space:normal;';
+                    d.textContent = det;   // 失败原因 + CD/重试时间，直接可见
+                    statusTd.appendChild(d);
+                }
+            }
             tr.appendChild(statusTd);
 
             // 所需宝石（=g.price），旁注卡牌数
