@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moe-icp-ids — Toolbox 小工具集</title>
+<meta name="description" content="从萌ICP 分页抓取可认领的萌号（备案号），去重排序后导出文本。">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="index.html">Toolbox <span class="brand-sub">小工具集</span></a>
+    <nav class="nav"><a href="https://github.com/awakaze/toolbox">GitHub 仓库</a></nav>
+  </div>
+</header>
+
+<main class="wrap detail">
+
+  <a class="back" href="index.html">← 返回工具列表</a>
+  <h1>萌ICP 萌号提取</h1>
+  <p class="lead">从 <a href="https://icp.gov.moe">萌ICP</a> 分页抓取当前可被认领的萌号（备案号 ID），去重排序后导出为文本文件，供你在萌ICP 上选号使用。</p>
+
+  <div class="tags">
+    <span class="tag">Python</span>
+    <span class="tag tag-muted">requests</span>
+  </div>
+
+  <div class="actions">
+    <a class="btn" href="https://github.com/awakaze/toolbox/tree/main/moe-icp-ids">查看源码</a>
+    <a class="btn btn-ghost" href="https://github.com/awakaze/toolbox/blob/main/moe-icp-ids/README.md">完整 README</a>
+  </div>
+
+  <h2>功能特性</h2>
+  <table>
+    <thead>
+      <tr><th>功能</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>批量抓取</td><td>自动遍历 <code>.moe</code> 分页（默认前 10 页），用正则提取 <code>join.php?id=…</code> 中的萌号</td></tr>
+      <tr><td>去重排序</td><td>合并所有页面结果，去重并按从小到大排序</td></tr>
+      <tr><td>结果导出</td><td>保存为纯文本 <code>moe_ids.txt</code>，每行一个萌号，可直接复制使用</td></tr>
+      <tr><td>礼貌请求</td><td>内置 0.5s 请求间隔，避免触发风控</td></tr>
+    </tbody>
+  </table>
+
+  <h2>安装</h2>
+  <pre><code>cd moe-icp-ids
+pip install -r requirements.txt</code></pre>
+
+  <h2>使用</h2>
+  <pre><code>python3 crawl_moe_ids.py</code></pre>
+  <p>脚本会依次请求 <code>https://icp.gov.moe/moeid.php?p=N</code>（N = 0..9），随后把验证可用的萌号按升序写入当前目录的 <code>moe_ids.txt</code>。</p>
+
+  <h3>自定义抓取页数</h3>
+  <p>默认抓取 10 页。如需调整，直接修改脚本里的取值范围（一共只有 10 页）：</p>
+  <pre><code>for p in range(10):   # 改这里，例如 range(20)</code></pre>
+
+  <h2>输出示例</h2>
+  <p><code>moe_ids.txt</code> 每行一个萌号：</p>
+  <pre><code>20260254
+20260257
+20260259</code></pre>
+
+  <h2>说明</h2>
+  <ul>
+    <li>依赖 <code>requests</code>；脚本仅此一个第三方库，无需 ffmpeg 等外部程序</li>
+    <li>抓取目标为公开页面，仍请控制频率、避免对站点造成压力，正式大量使用前建议先小范围试跑</li>
+    <li>萌号可用性以萌ICP 站点实时状态为准，脚本结果仅代表抓取那一刻的页面内容</li>
+  </ul>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <span>Toolbox 小工具集 · MIT License</span>
+    <a href="https://github.com/awakaze/toolbox/tree/main/moe-icp-ids">在 GitHub 上查看源码</a>
+  </div>
+</footer>
+
+</body>
+</html>

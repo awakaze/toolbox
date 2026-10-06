@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>steam-booster-tool — Toolbox 小工具集</title>
+<meta name="description" content="Steam 补充包工具箱：按宝石做包利润筛选，管理拉黑/收藏/队列，队列游戏到点自动做包。">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="index.html">Toolbox <span class="brand-sub">小工具集</span></a>
+    <nav class="nav"><a href="https://github.com/awakaze/toolbox">GitHub 仓库</a></nav>
+  </div>
+</header>
+
+<main class="wrap detail">
+
+  <a class="back" href="index.html">← 返回工具列表</a>
+  <h1>Steam 补充包筛选制作</h1>
+  <p class="lead">运行在 Steam 社区「补充包制作」页与游戏商店详情页的 Tampermonkey 用户脚本：按<strong>宝石做包利润</strong>筛选补充包，支持拉黑 / 收藏 / 做包队列 / 自动作包列表管理，自动列表里的游戏<strong>到点自动制作</strong>。价格取自官方 Steam 接口，并按 Steam 新版市场手续费计算税后收入。</p>
+
+  <div class="tags">
+    <span class="tag">Tampermonkey</span>
+    <span class="tag tag-muted">无依赖</span>
+    <span class="tag tag-muted">单文件脚本</span>
+  </div>
+
+  <div class="actions">
+    <a class="btn" href="https://github.com/awakaze/toolbox/raw/main/steam-booster-tool/steam-booster-tool.user.js">安装用户脚本</a>
+    <a class="btn btn-ghost" href="https://github.com/awakaze/toolbox/tree/main/steam-booster-tool">查看源码</a>
+    <a class="btn btn-ghost" href="https://github.com/awakaze/toolbox/blob/main/steam-booster-tool/README.md">完整 README</a>
+  </div>
+
+  <h2>功能特性</h2>
+  <ul>
+    <li><strong>利润筛选</strong>：逐游戏展示 做包成本 / 3 张卡牌税后收入 / 补充包税后卖价 / 利润率 / 制作量 / 上次制作</li>
+    <li><strong>查询架构</strong>：每游戏 2 个请求起（卡牌数 &gt;10 时自动翻页），全部走 <code>search/render?norender=1</code>（JSON，<code>sell_price</code> 为钱包币种精确分值）</li>
+    <li><strong>利润保护</strong>：默认不做利润低于 10% 的补充包；队列 / 自动列表里对单个游戏勾选「强制」即可绕过阈值</li>
+    <li><strong>列表管理</strong>：未分类可在 拉黑 / 收藏 / 做包队列 / 自动作包列表 之间流转，支持「一键拉黑未分类」</li>
+    <li><strong>队列一键制作</strong>：「一键制作（队列可做 N）」立即把队列里可做的游戏做掉</li>
+    <li><strong>自动做包</strong>：加入自动做包列表时立即尝试一次；「自动做包」复选框为轮询总开关，到点实时查价 → 利润闸门 → 串行制作，结果走系统通知</li>
+    <li><strong>防风控</strong>：所有价格请求严格串行 + 可配间隔，命中限流自动退避重试，单游戏失败即标记跳过、绝不卡死</li>
+    <li><strong>跨页持久化</strong>：列表、配置、价格缓存、退避状态存浏览器端 GM 存储，刷新 / 换天保留</li>
+  </ul>
+
+  <h2>安装</h2>
+  <ol>
+    <li>浏览器安装 <a href="https://www.tampermonkey.net/">Tampermonkey</a>（Chrome / Edge / Firefox）</li>
+    <li>点击上方「安装用户脚本」按钮（或打开 Tampermonkey 管理面板 → <code>+</code> 新建脚本 → 全选粘贴脚本内容），保存</li>
+    <li>登录 Steam 社区，打开补充包制作页，工具栏即出现在页面上</li>
+  </ol>
+
+  <h2>利润是什么</h2>
+  <p>利润指「自己做包 → 拆卡卖掉」这条路线的利润率（不是买别人的包来拆）：</p>
+  <pre><code>成本   = 做一个包所需宝石数 ÷ 1000 × 一袋宝石价（市场价或自定义价）
+收入   = 拆包得 3 张普通卡，每张按市场最低在售价扣手续费后到手
+         （逐卡单独计税再平均 × 3；手续费按 2025-12 新规）
+利润率 = (3卡税后收入 − 成本) ÷ 成本</code></pre>
+  <ul>
+    <li><strong>补充包卖价</strong>列是「直接卖整个包」的税后所得，仅供两条路线对比，自动制作只按拆卡利润率决策</li>
+    <li>已含全部税费；不含市场价格波动与挂单时间成本</li>
+  </ul>
+
+  <h2>做包页控制条</h2>
+  <table>
+    <thead>
+      <tr><th>项</th><th>含义</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>一袋宝石(市场)</td><td>市场最低在售价，成本基准</td></tr>
+      <tr><td>自动做包</td><td>自动作包轮询总开关（盯「自动做包列表」）；勾选时立即检查一次已到点的</td></tr>
+      <tr><td>轮询min</td><td>轮询检查间隔（分钟），本地定时无网络请求；改动后立即生效</td></tr>
+      <tr><td>利润 ≥ 10.0%</td><td>自动制作的闸门，低于此值跳过（行内勾「强制」可绕过）</td></tr>
+      <tr><td>宝石价：市场</td><td>成本用市场宝石价还是自定义价</td></tr>
+      <tr><td>间隔ms</td><td>相邻请求间隔，防风控，越小越快越危险</td></tr>
+      <tr><td>列表：全部</td><td>切换展示 全部 / 队列 / 自动做包 / 收藏 / 未分类 / 黑名单</td></tr>
+      <tr><td>一键拉黑未分类</td><td>把「未分类」里的游戏全部拉黑（彻底不再显示；不影响自动列表）</td></tr>
+      <tr><td>查询当前列表</td><td>缓存全部立即失效，实时重查所有价格（含宝石价）</td></tr>
+      <tr><td>一键制作（队列可做 N）</td><td>队列的手动立即制作</td></tr>
+      <tr><td>制作自动列表（可做 N）</td><td>手动触发一轮自动做包引擎（无视总开关，规则相同）</td></tr>
+    </tbody>
+  </table>
+
+  <h2>自动作包工作方式</h2>
+  <pre><code>游戏加入「自动做包列表」
+  → 立即尝试做一次（不可做 / 冷却中则失败，交给轮询）
+  → 「自动做包」开关开启时，每 轮询min 分钟检查一次（纯本地定时，零请求）
+  → 游戏冷却到点：
+       实时查价（2 请求）→ 利润闸门（"强制"绕过）→ 串行制作
+  → 结果通知：
+       做成     → 批次汇总系统通知（同一 tick 做成几个合并为一条）
+       没到 CD  → 完全静默
+       宝石不足 → 通知一次 + 自动取消「自动做包」勾选（手动勾选恢复轮询）
+       其他失败 → 退避 5→15→30 分钟重试（不通知），放弃后通知一次，24 小时后自动恢复</code></pre>
+  <div class="note">
+    <p>脚本运行在浏览器页面里，<strong>做包页标签页需保持打开</strong>；做成后该游戏本会话不再重做，页面刷新后按 Steam 新冷却继续。</p>
+  </div>
+
+  <h2>手续费模型</h2>
+  <p>Steam 新版市场规则：卖家设定<strong>到手价 R</strong>，买家支付 <code>P = R + fee(R)</code>；手续费按到手价计算，一笔交易拆两笔独立费用，各自<strong>向下取整到分、且每笔不低于最低额</strong>：</p>
+  <pre><code>交易费 = max(minFee, floor(到手价 × 5%))     // Steam 交易费
+分成费 = max(minFee, floor(到手价 × 10%))    // 卡牌 / 补充包属 Steam 本体</code></pre>
+  <div class="note">
+    <p><strong>【2025 年 12 月起】单笔最低手续费提高为 $0.01 等值：国区 = ¥0.07</strong>（旧值 ¥0.01 已失效）。</p>
+  </div>
+  <p>脚本由市场返回的买家支付价 P 精确反解到手价 R，并逐卡单独计税后再取平均。反解校验示例（人民币区，minFee = 7 分）：</p>
+  <table>
+    <thead>
+      <tr><th>买家支付价</th><th>手续费</th><th>到手</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>¥0.21</td><td>0.07+0.07</td><td>¥0.07</td></tr>
+      <tr><td>¥0.74</td><td>0.07+0.07</td><td>¥0.60</td></tr>
+      <tr><td>¥1.00</td><td>0.07+0.08</td><td>¥0.85</td></tr>
+      <tr><td>¥1.08</td><td>0.07+0.09</td><td>¥0.92</td></tr>
+    </tbody>
+  </table>
+
+  <h2>配置项（GM 存储）</h2>
+  <table>
+    <thead>
+      <tr><th>键</th><th>默认</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>autoPoll</code></td><td><code>false</code></td><td>自动作包轮询总开关（盯自动做包列表）</td></tr>
+      <tr><td><code>pollInterval_min</code></td><td><code>10</code></td><td>轮询检查间隔（分钟）</td></tr>
+      <tr><td><code>profitThreshold</code></td><td><code>0.10</code></td><td>利润阈值（默认 10%）</td></tr>
+      <tr><td><code>gemPriceSource</code></td><td><code>market</code></td><td><code>market</code> 市场宝石价 / <code>custom</code> 自定义</td></tr>
+      <tr><td><code>customGemPrice</code></td><td><code>270</code></td><td>自定义一袋宝石价（分）</td></tr>
+      <tr><td><code>reqInterval</code></td><td><code>250</code></td><td>价格请求间隔 ms（防风控）</td></tr>
+      <tr><td><code>maxRetries</code></td><td><code>3</code></td><td>单请求失败 / 限流重试次数</td></tr>
+      <tr><td><code>priceCacheTTL_min</code></td><td><code>30</code></td><td>价格数据存储有效期（分钟）</td></tr>
+      <tr><td><code>forceList</code></td><td><code>{}</code></td><td>逐游戏强制制作映射 <code>{appid: 1}</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>常见问题</h2>
+  <h3>进页面后状态一直「正在读取补充包数据…」？</h3>
+  <p>脚本依赖页面全局 <code>CBoosterCreatorPage.sm_rgBoosterData</code> 异步加载；若持续无数据，刷新页面或确认 Tampermonkey 已启用并匹配当前网址。</p>
+  <h3>为什么当前列表很久才出价格？</h3>
+  <p>为防 Steam 卡风控，脚本强制串行 + 间隔请求，列表越长越久。再次访问时多数价格走缓存会明显加快，请求间隔可在控制条调整。</p>
+  <h3>自动做包没做某些游戏？</h3>
+  <p>被跳过的通常是：冷却未过、利润低于阈值、卡牌不可交易、或尚未算出利润。勾选该游戏「强制」可强制制作（若宝石充足）。</p>
+  <h3>为什么自动做包没反应？</h3>
+  <p>确认三点：游戏在「自动做包」列表里、<code>自动做包</code>复选框已勾选、<strong>做包页标签页保持打开</strong>。</p>
+  <h3>失败的自动制作会一直重试吗？</h3>
+  <p>可恢复错误按 5→15→30 分钟退避重试，退避进度跨页面刷新保留；连续失败 4 次后放弃并系统通知，24 小时后自动恢复监控。</p>
+
+  <div class="note">
+    <p><strong>免责声明</strong>：仅供个人学习使用，数据与做包接口来自 Steam 官方。请遵守 Steam 服务条款，注意页面活跃与频率，风险自负。</p>
+  </div>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <span>Toolbox 小工具集 · MIT License</span>
+    <a href="https://github.com/awakaze/toolbox/tree/main/steam-booster-tool">在 GitHub 上查看源码</a>
+  </div>
+</footer>
+
+</body>
+</html>

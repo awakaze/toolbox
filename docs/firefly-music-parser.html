@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>firefly-music-parser — Toolbox 小工具集</title>
+<meta name="description" content="为 Firefly 博客主题的本地音乐模式一键解析音频标签、封面、歌词并生成配置。">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="index.html">Toolbox <span class="brand-sub">小工具集</span></a>
+    <nav class="nav"><a href="https://github.com/awakaze/toolbox">GitHub 仓库</a></nav>
+  </div>
+</header>
+
+<main class="wrap detail">
+
+  <a class="back" href="index.html">← 返回工具列表</a>
+  <h1>Firefly Music Parser</h1>
+  <p class="lead">为 <a href="https://github.com/CuteLeaf/Firefly">Firefly</a> 博客主题的本地音乐模式一键生成所需的全部资源。把音频文件（或整个目录）丢给脚本即可。</p>
+
+  <div class="tags">
+    <span class="tag">Python</span>
+    <span class="tag tag-muted">requests · mutagen</span>
+    <span class="tag tag-muted">ffmpeg（可选）</span>
+  </div>
+
+  <div class="actions">
+    <a class="btn" href="https://github.com/awakaze/toolbox/tree/main/firefly-music-parser">查看源码</a>
+    <a class="btn btn-ghost" href="https://github.com/awakaze/toolbox/blob/main/firefly-music-parser/README.md">完整 README</a>
+  </div>
+
+  <h2>功能特性</h2>
+  <table>
+    <thead>
+      <tr><th>功能</th><th>来源</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>歌名 / 艺术家 / 专辑 / 时长</td><td>音频文件的 ID3 / FLAC 标签（缺失时回退解析文件名 <code>艺术家 - 歌名.mp3</code>）</td></tr>
+      <tr><td>封面图片</td><td>音频内嵌封面，导出为 jpg 并缩放（依赖 ffmpeg，可选）</td></tr>
+      <tr><td>音频压缩</td><td>超过 20MB 的音频自动转码为 320kbps mp3（依赖 ffmpeg；压缩后仍超 20MB 会提示）</td></tr>
+      <tr><td>同步歌词（LRC）</td><td>网易云音乐公开接口，智能匹配（歌名相似度 + 歌手 + 时长）</td></tr>
+      <tr><td>播放列表配置</td><td>生成与 <code>musicConfig.ts</code> 格式一致的 TS 片段，直接粘贴即用</td></tr>
+    </tbody>
+  </table>
+
+  <h2>安装</h2>
+  <pre><code>git clone https://github.com/awakaze/toolbox.git
+cd toolbox/firefly-music-parser
+pip install -r requirements.txt</code></pre>
+  <p>可选依赖：<a href="https://ffmpeg.org/download.html">ffmpeg</a>（用于封面缩放和音频压缩；未安装时封面保存原图、大音频原样复制）。</p>
+
+  <h2>使用</h2>
+  <p><strong>推荐用法（零参数）</strong>：把音频文件放进脚本目录下的 <code>music/</code> 文件夹，直接运行：</p>
+  <pre><code>python3 music_parser.py</code></pre>
+  <p>脚本自动读取 <code>music/</code> 里的所有音频，结果输出到 <code>music/output/</code>。</p>
+
+  <p>也可以自定义输入输出：</p>
+  <pre><code># 单个文件（歌词默认原语言）
+python3 music_parser.py "歌曲.mp3"
+
+# 指定目录 + 指定输出位置
+python3 music_parser.py ~/Music/ -o my-output
+
+# 歌词仅中文翻译（英文歌显示中文，无翻译时回退原语言）
+python3 music_parser.py --lyric-lang trans
+
+# 歌词原文 + 翻译合并显示
+python3 music_parser.py --lyric-lang merge
+
+# 跳过歌词下载（只要标签和封面）
+python3 music_parser.py --no-lrc</code></pre>
+
+  <h3>全部参数</h3>
+  <table>
+    <thead>
+      <tr><th>参数</th><th>默认值</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>input</code></td><td>脚本目录下的 <code>music/</code></td><td>音频文件或包含音频的目录（递归扫描 mp3/flac/m4a/ogg/wav/opus）</td></tr>
+      <tr><td><code>-o, --output</code></td><td>输入目录下的 <code>output/</code></td><td>输出目录</td></tr>
+      <tr><td><code>--size</code></td><td><code>500</code></td><td>封面边长像素，<code>0</code> 为原始尺寸</td></tr>
+      <tr><td><code>--lyric-lang</code></td><td><code>orig</code></td><td>歌词语言：<code>orig</code> 原语言 / <code>trans</code> 仅翻译 / <code>merge</code> 原文+翻译合并</td></tr>
+      <tr><td><code>--no-lrc</code></td><td>—</td><td>跳过歌词下载</td></tr>
+    </tbody>
+  </table>
+
+  <h2>输出结构</h2>
+  <pre><code>music/                    ← 你放音频的地方
+├── 歌曲A.mp3              输入（保持原样）
+├── 歌曲B.flac
+└── output/               ← 解析结果
+    ├── assets/music/                          复制到 Firefly 的 public/ 下
+    │   ├── 艺术家 - 歌名.mp3                   音频（重命名整理）
+    │   ├── cover/
+    │   │   └── 艺术家 - 歌名.jpg               封面
+    │   └── lrc/
+    │       └── 艺术家 - 歌名.lrc               歌词
+    ├── musicConfig.local.ts                   粘贴进 src/config/musicConfig.ts
+    └── playlist.json                          同内容 JSON 版本</code></pre>
+  <p>再次运行会自动跳过 <code>output/</code> 目录，只处理新放入的音频。</p>
+
+  <h2>接入 Firefly 三步</h2>
+  <ol>
+    <li>复制资源：<code>cp -r music/output/assets/ &lt;你的Firefly&gt;/public/</code></li>
+    <li>打开 <code>music/output/musicConfig.local.ts</code>，把 <code>local: { ... }</code> 整块替换进 <code>src/config/musicConfig.ts</code></li>
+    <li>确认 <code>mode: "local"</code>，构建生效</li>
+  </ol>
+
+  <h2>说明</h2>
+  <ul>
+    <li><strong>大文件处理</strong>：超过 20MB 的音频自动转码为 320kbps mp3（无损 flac 常见场景）；压缩后仍超过 20MB 会输出警告，文件仍正常输出，介意体积可手动截取或用 <code>ffmpeg -b:a 192k</code> 进一步压低码率</li>
+    <li>歌词使用网易云音乐的公开接口，无需账号或 key；已内置请求间隔避免风控，批量处理大曲库建议分批</li>
+    <li>未匹配到歌词 / 无内嵌封面的歌曲会跳过对应字段，不影响播放（<code>cover</code>、<code>lrc</code> 均为可选项）</li>
+    <li>仅适合个人博客等非商业用途，歌词版权归原平台及作者所有</li>
+  </ul>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <span>Toolbox 小工具集 · MIT License</span>
+    <a href="https://github.com/awakaze/toolbox/tree/main/firefly-music-parser">在 GitHub 上查看源码</a>
+  </div>
+</footer>
+
+</body>
+</html>

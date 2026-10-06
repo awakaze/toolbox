@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>trae-checkin — Toolbox 小工具集</title>
+<meta name="description" content="Trae CN 每日自动签到领积分，支持本机登录态自动解密、多账号与通知推送。">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="index.html">Toolbox <span class="brand-sub">小工具集</span></a>
+    <nav class="nav"><a href="https://github.com/awakaze/toolbox">GitHub 仓库</a></nav>
+  </div>
+</header>
+
+<main class="wrap detail">
+
+  <a class="back" href="index.html">← 返回工具列表</a>
+  <h1>Trae 每日自动签到</h1>
+  <p class="lead">自动完成 Trae CN（TraeWork）每日签到领取积分（每天 150~200 积分），以 Python 标准库为主。</p>
+
+  <div class="tags">
+    <span class="tag">Python</span>
+    <span class="tag tag-muted">pycryptodome（可选）</span>
+    <span class="tag tag-muted">纯标准库可跑</span>
+  </div>
+
+  <div class="actions">
+    <a class="btn" href="https://github.com/awakaze/toolbox/tree/main/trae-checkin">查看源码</a>
+    <a class="btn btn-ghost" href="https://github.com/awakaze/toolbox/blob/main/trae-checkin/README.md">完整 README</a>
+  </div>
+
+  <h2>功能特性</h2>
+  <ul>
+    <li><strong>自动读取本机登录态</strong>：默认从本机已登录的 Trae IDE 直接解密读取 token，无需手动复制（可选装 <code>pycryptodome</code>；未装则退回手动配置）</li>
+    <li><strong>先查后签</strong>：先查询签到状态，已签到自动跳过；领取后自动复查确认到账</li>
+    <li><strong>每日运行记录</strong>：本目录 <code>checkin_history.jsonl</code> 按日记录每次运行；计划任务重复触发（开机补跑）时若当天已签到成功则<strong>静默跳过</strong>，不发请求、不弹通知</li>
+    <li><strong>限流重试</strong>：针对高峰期服务器限流（code 9074）自动指数退避重试</li>
+    <li><strong>防风控限额</strong>：每日领取请求最多 10 次（状态查询不计入），跨多次运行累计，超限自动停止</li>
+    <li><strong>随机延迟</strong>：可配置启动后随机延迟 0~N 分钟，避开整点脚本高峰</li>
+    <li><strong>多账号</strong>：支持批量签到，按账号逐个处理、汇总结果</li>
+    <li><strong>通知推送</strong>：失败时推送 Server酱（微信）/ Bark（iOS）/ Telegram / 自定义 Webhook；TG 自动使用系统代理</li>
+    <li><strong>Windows 系统通知</strong>：失败必弹；成功仅当天首次成功弹一次，之后的重复触发静默（无窗口弹出，零依赖）</li>
+    <li><strong>计划任务后台运行</strong>：定时触发时经 <code>pythonw</code> 完全后台运行，无黑窗口、无闪烁</li>
+    <li><strong>token 有效期检测</strong>：JWT 格式的 token 自动显示剩余天数，临期预警、过期明确报错</li>
+    <li><strong>安全</strong>：日志中 token 脱敏，请求头与官方客户端行为一致</li>
+  </ul>
+
+  <h2>快速开始（本机部署）</h2>
+
+  <h3>1. 获取 token</h3>
+  <p><strong>默认自动读取</strong>：脚本优先从本机已登录的 Trae IDE 解密出账号 token，本机登录过 Trae 即可直接跑，无需手动复制。</p>
+  <div class="note">
+    <p>自动读取依赖 <code>pycryptodome</code>（可选）。已装则自动启用；未装也能跑，只是需要手动配置 token：<code>pip install pycryptodome</code></p>
+  </div>
+
+  <h3>2. 填写配置</h3>
+  <p>复制 <code>config.example.json</code> 为 <code>config.json</code>（与脚本同目录）即可，<code>TRAE_TOKEN</code> 留空也能自动读取本机登录态：</p>
+  <pre><code>{
+  "TRAE_TOKEN": "",
+  "CHECKIN_MAX_DELAY": "300"
+}</code></pre>
+  <div class="note">
+    <p><code>config.json</code> 含 token，已被本目录 <code>.gitignore</code> 忽略，<strong>不会提交到 git</strong>；仓库内只保留模板 <code>config.example.json</code>。云服务器上无法读取本机登录态，需填 token。</p>
+  </div>
+
+  <h3>3. 运行</h3>
+  <p><strong>Windows</strong>：双击 <code>run_checkin.cmd</code>，窗口会显示结果后暂停。</p>
+  <p><strong>macOS / Linux</strong>：</p>
+  <pre><code>./run_checkin.sh</code></pre>
+  <p>日志自动写入同目录的 <code>checkin.log</code>。</p>
+
+  <h3>4. 设置每天自动签到</h3>
+  <pre><code># Windows（任务计划程序，无需管理员权限，每天 08:00）
+schtasks /create /tn "TraeCheckin" /tr "\"C:\你的路径\run_checkin.cmd\"" /sc daily /st 08:00
+
+# macOS / Linux（crontab -e 添加）
+0 8 * * * /你的路径/run_checkin.sh</code></pre>
+
+  <h2>配置项说明</h2>
+  <p>配置文件 <code>config.json</code> 与环境变量通用（环境变量优先），全部键：</p>
+  <table>
+    <thead>
+      <tr><th>键</th><th>必填</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>TRAE_TOKEN</code></td><td>选填</td><td>手动指定单账号 token；留空则自动读取本机 Trae 登录态</td></tr>
+      <tr><td><code>TRAE_TOKENS</code></td><td>选填</td><td>多账号，逗号分隔，支持命名：<code>主号=token1,小号=token2</code></td></tr>
+      <tr><td><code>CHECKIN_MAX_DELAY</code></td><td>否</td><td>启动随机延迟上限秒数（默认 0，定时任务建议 300）</td></tr>
+      <tr><td><code>TRAE_RETRIES</code></td><td>否</td><td>失败重试次数（默认 5）</td></tr>
+      <tr><td><code>NOTIFY_ON_SUCCESS</code></td><td>否</td><td>签到成功是否推送第三方通知，<code>1</code>/<code>0</code>（默认 0）</td></tr>
+      <tr><td><code>SERVERCHAN_KEY</code></td><td>否</td><td>Server酱 SendKey，推送到微信</td></tr>
+      <tr><td><code>BARK_URL</code></td><td>否</td><td>Bark 推送地址，如 <code>https://api.day.app/你的key</code></td></tr>
+      <tr><td><code>TG_BOT_TOKEN</code></td><td>否</td><td>Telegram Bot Token（需配合 <code>TG_CHAT_ID</code>）</td></tr>
+      <tr><td><code>TG_CHAT_ID</code></td><td>否</td><td>Telegram Chat ID</td></tr>
+      <tr><td><code>WEBHOOK_URL</code></td><td>否</td><td>自定义 Webhook，POST JSON <code>{"title","content"}</code></td></tr>
+      <tr><td><code>LOG_FILE</code></td><td>否</td><td>日志文件路径</td></tr>
+    </tbody>
+  </table>
+
+  <h2>命令行用法</h2>
+  <pre><code>python3 trae_checkin.py                  # 正常签到
+python3 trae_checkin.py --status-only    # 只查状态，不领取（不写运行记录、不弹通知）
+python3 trae_checkin.py --retries 10     # 失败最多重试 10 次
+python3 trae_checkin.py --max-delay 300  # 随机延迟 0~5 分钟后开始
+python3 trae_checkin.py --delay 120      # 固定延迟 2 分钟后开始（计划任务触发用）
+python3 trae_checkin.py --scheduled      # 计划任务模式：当天已签到成功则静默跳过
+python3 trae_checkin.py --no-notify      # 本次不推送通知
+python3 trae_checkin.py -v               # 调试日志（含接口原始响应）
+python3 trae_checkin.py --config /path/to/config.json  # 指定配置文件</code></pre>
+  <p>退出码：<code>0</code> 全部成功 / <code>1</code> 存在失败 / <code>2</code> 配置错误。</p>
+
+  <h2>Windows 定时任务容错</h2>
+  <p>用任务计划程序实现每天自动签到，内置四层本地容错：</p>
+  <table>
+    <thead>
+      <tr><th>场景</th><th>保障</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>到点没开机</td><td><code>StartWhenAvailable</code>：下次开机登录自动补跑</td></tr>
+      <tr><td>跑到一半断电 / 关机</td><td><code>LogonTrigger</code>：当天再次开机登录 2 分钟后自动补签（服务端幂等，已签自动跳过）</td></tr>
+      <tr><td>程序卡死 / 异常退出</td><td><code>RestartOnFailure</code>：5 分钟后自动重启，最多 3 次</td></tr>
+      <tr><td>请求被限流（9074）</td><td>脚本指数退避重试（默认 5 次），重试耗尽才判失败</td></tr>
+      <tr><td>重复触发弹通知扰民</td><td>本地 <code>checkin_history.jsonl</code> 记录当天结果：已成功则后续触发静默跳过</td></tr>
+    </tbody>
+  </table>
+  <p>导入任务（无需管理员）：</p>
+  <pre><code>schtasks /create /tn "TraeCheckin" /xml "C:\trae-checkin\TraeCheckin.xml"</code></pre>
+  <p>导入前需编辑 <code>TraeCheckin.xml</code>，把 <code>&lt;Command&gt;</code> 里的路径改成实际的 <code>run_checkin.cmd</code> 完整路径。</p>
+
+  <h2>常见问题</h2>
+  <h3>提示 token 无效或已过期（code 1001）？</h3>
+  <p>token 有有效期，过期后重新获取一次，更新到 <code>config.json</code> 即可。</p>
+  <h3>提示服务器繁忙（code 9074）？</h3>
+  <p>高峰期限流，属正常现象。脚本会自动重试；也可把定时任务改到凌晨等低峰时段。</p>
+  <h3>提示参数错误（code 9004）？</h3>
+  <p>用 <code>-v</code> 参数运行查看接口原始响应，确认 token 是否完整复制（注意不要带上多余空格或换行）。</p>
+  <h3>签到显示成功但没收到通知？</h3>
+  <p>检查通知渠道配置是否完整（如 Telegram 需要同时配 <code>TG_BOT_TOKEN</code> 和 <code>TG_CHAT_ID</code>，国内网络需系统代理在线）。</p>
+
+  <div class="note">
+    <p><strong>免责声明</strong>：仅供个人学习使用，签到接口来自 Trae 官方 API。请遵守服务条款，风险自负。</p>
+  </div>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <span>Toolbox 小工具集 · MIT License</span>
+    <a href="https://github.com/awakaze/toolbox/tree/main/trae-checkin">在 GitHub 上查看源码</a>
+  </div>
+</footer>
+
+</body>
+</html>
