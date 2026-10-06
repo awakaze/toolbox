@@ -153,6 +153,10 @@ if __name__ == "__main__":
                 print(f"[{file}] 分离成功！ -> 提取出 .{result['ext']} 压缩包")
             elif result['status'] == 'skipped_missing':
                 print(f"[{file}] 找不到文件，已跳过。")
+            elif result['status'] == 'skipped_no_sig':
+                print(f"[{file}] 未检测到压缩包特征码，不是图种文件（已跳过）。")
+            elif result['status'] == 'skipped_empty':
+                print(f"[{file}] 空文件，已跳过。")
             elif result['status'] == 'error':
                 print(f"[{file}] 处理出错：{result['error']}")
         print("全部扫描处理完毕！")

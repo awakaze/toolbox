@@ -7,6 +7,7 @@
 
 import os
 import queue
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -70,6 +71,9 @@ class SplitGUI:
 
         self.start_btn = ttk.Button(bar, text="开始分离", command=self.start)
         self.start_btn.pack(side='right')
+
+        self.register_btn = ttk.Button(bar, text="注册到右键", command=self.register_open_with)
+        self.register_btn.pack(side='right', padx=(0, 6))
 
     def _build_list(self):
         frame = ttk.Frame(self.root, padding=(8, 0, 8, 0))
@@ -149,15 +153,58 @@ class SplitGUI:
 
     def _insert(self, path):
         if path == os.path.abspath(__file__):
-            return
+            return False
         if self.tree.exists(self._iid(path)):
-            return
+            return False
         try:
             size = os.path.getsize(path)
         except OSError:
-            return
+            return False
         self.tree.insert('', 'end', iid=self._iid(path),
                          values=(path, human_size(size), '待处理'))
+        return True
+
+    def load_args(self, paths):
+        """通过命令行参数（右键「打开方式」）批量导入文件并自动开始分离。"""
+        added = False
+        for p in paths:
+            if os.path.isdir(p):
+                self._scan_folder(p)
+                added = True
+            elif os.path.isfile(p):
+                if self._insert(p):
+                    added = True
+        if added:
+            self.start()
+
+    def register_open_with(self):
+        """把当前程序写入注册表，加入图片右键「打开方式」菜单。"""
+        import winreg
+
+        progid = 'tuzhong-split.open'
+        exts = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tif', '.tiff']
+
+        # 打包成 exe 时用 exe 自身路径；脚本运行时退回到 python + gui.py
+        if getattr(sys, 'frozen', False):
+            command = f'"{sys.executable}" "%1"'
+        else:
+            command = f'"{sys.executable}" "{os.path.abspath(__file__)}" "%1"'
+
+        try:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+                                  rf'Software\Classes\{progid}') as key:
+                winreg.SetValueEx(key, None, 0, winreg.REG_SZ, '图种分离')
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+                                  rf'Software\Classes\{progid}\shell\open\command') as key:
+                winreg.SetValueEx(key, None, 0, winreg.REG_SZ, command)
+            for ext in exts:
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+                                      rf'Software\Classes\{ext}\OpenWithProgids') as key:
+                    winreg.SetValueEx(key, progid, 0, winreg.REG_NONE, b'')
+        except OSError as e:
+            messagebox.showerror('注册失败', f'写入注册表失败：{e}')
+            return
+        messagebox.showinfo('注册成功', '已把「图种分离」加入右键「打开方式」，现在可以右键图片选择它来分离了。')
 
     def remove_selected(self):
         for iid in self.tree.selection():
@@ -261,5 +308,8 @@ class SplitGUI:
 
 if __name__ == "__main__":
     root = TkinterDnD.Tk()
-    SplitGUI(root)
+    gui = SplitGUI(root)
+    # 通过右键「打开方式」启动时会带有文件路径参数，自动加入列表并开始分离
+    if len(sys.argv) > 1:
+        gui.load_args(sys.argv[1:])
     root.mainloop()
