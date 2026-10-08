@@ -25,6 +25,9 @@ RESULT_TEXT = {
     'skipped_no_sig': '无特征码',
     'skipped_missing': '不存在',
     'skipped_self': '脚本自身',
+    'skipped_temp': '临时文件',
+    'skipped_locked': '被占用',
+    'skipped_nospace': '空间不足',
     'error': '失败',
 }
 

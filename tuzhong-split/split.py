@@ -1,7 +1,19 @@
-import os
-import sys
 import glob
+import hashlib
 import mmap
+import os
+import shutil
+import sys
+import tempfile
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 SIGNATURES = {
     'zip': b'\x50\x4B\x03\x04',
@@ -11,9 +23,62 @@ SIGNATURES = {
 
 CHUNK_SIZE = 4 * 1024 * 1024  # 每次搬运 4MB
 
+PART_SUFFIX = '.part'  # 上次中断遗留的临时半成品后缀
+
+
+class OutputLock:
+    """同一组输出文件的跨进程互斥锁。
+
+    锁文件放在系统临时目录（不污染源文件目录），按输出路径哈希命名。
+    不同文件的目标路径不同、互不影响，因此可以同时开多个窗口处理不同文件（多任务）；
+    只有两个进程同时在写同一目标时，后到者才会被拒绝。
+    进程退出/崩溃时由操作系统自动释放，不会留下死锁。
+    """
+
+    def __init__(self, key_path):
+        digest = hashlib.sha1(
+            os.path.abspath(key_path).encode('utf-8', 'surrogatepass')
+        ).hexdigest()[:16]
+        self.lock_path = os.path.join(tempfile.gettempdir(), f'tuzhong-split-{digest}.lock')
+        self.fd = None
+
+    def acquire(self):
+        self.fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR)
+        if os.fstat(self.fd).st_size == 0:
+            os.write(self.fd, b'0')
+        try:
+            # 统一锁「文件头 1 字节」这个固定区域（msvcrt.locking 从当前指针起算）
+            os.lseek(self.fd, 0, os.SEEK_SET)
+            if msvcrt is not None:
+                msvcrt.locking(self.fd, msvcrt.LK_NBLCK, 1)
+            elif fcntl is not None:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            os.close(self.fd)
+            self.fd = None
+            return False
+
+    def release(self):
+        if self.fd is None:
+            return
+        try:
+            os.lseek(self.fd, 0, os.SEEK_SET)
+            if msvcrt is not None:
+                msvcrt.locking(self.fd, msvcrt.LK_UNLCK, 1)
+            elif fcntl is not None:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            os.close(self.fd)
+            self.fd = None
+
 
 def split_tuzhong(file_path, progress=None):
     """拆分单个图种文件为「图片 + 压缩包」两个文件。
+
+    行为：总是用新结果覆盖旧结果；写入失败/中断时保留旧结果不动。
 
     参数：
         progress(done, total)：可选进度回调，done 为已处理字节数，total 为总字节数。
@@ -22,7 +87,10 @@ def split_tuzhong(file_path, progress=None):
         skipped_self        脚本自身，跳过
         skipped_missing     文件不存在
         skipped_empty       空文件
+        skipped_temp        上次中断遗留的临时半成品，跳过
         skipped_no_sig      未找到压缩包特征码
+        skipped_locked      另一个进程正在分离同一目标
+        skipped_nospace     磁盘空间不足
         success             拆分成功（ext 为压缩包扩展名）
         error               处理出错（error 为异常信息）
     """
@@ -36,6 +104,10 @@ def split_tuzhong(file_path, progress=None):
     file_size = os.path.getsize(file_path)
     if file_size == 0:
         return {'status': 'skipped_empty'}
+
+    # 上次中断遗留的临时半成品，跳过（我们自己产生的中间文件，没有分离价值）
+    if os.path.basename(file_path).endswith(PART_SUFFIX):
+        return {'status': 'skipped_temp'}
 
     try:
         found_ext = None
@@ -61,35 +133,66 @@ def split_tuzhong(file_path, progress=None):
         img_path = f"{base_name}_分离出的图片{original_ext}"
         archive_path = f"{base_name}_分离出的压缩包.{found_ext}"
 
+        # 写前检查磁盘剩余空间：输出总量约等于源文件大小
+        try:
+            free = shutil.disk_usage(os.path.dirname(os.path.abspath(file_path))).free
+        except OSError:
+            free = None
+        if free is not None and free < file_size:
+            return {'status': 'skipped_nospace',
+                    'error': f'剩余 {free} 字节 < 需要 {file_size} 字节'}
+
+        # 同一目标同时只允许一个进程写；不同文件目标不同，互不影响（可多任务）
+        lock = OutputLock(archive_path)
+        if not lock.acquire():
+            return {'status': 'skipped_locked'}
+
+        # 先写临时文件，全部成功后再原子改名：中断不会留下 0 字节/半成品，也不会破坏旧结果
+        tmp_img = f"{img_path}.{os.getpid()}{PART_SUFFIX}"
+        tmp_arc = f"{archive_path}.{os.getpid()}{PART_SUFFIX}"
+
         done = 0
-        # 【优化 2】：分块边读边写，全程流式搬运，不整载入内存
-        with open(file_path, 'rb') as src, \
-             open(img_path, 'wb') as img_f, \
-             open(archive_path, 'wb') as arc_f:
+        try:
+            # 【优化 2】：分块边读边写，全程流式搬运，不整载入内存
+            with open(file_path, 'rb') as src, \
+                 open(tmp_img, 'wb') as img_f, \
+                 open(tmp_arc, 'wb') as arc_f:
 
-            # 第一步：搬运图片部分 (从 0 到 found_pos)
-            bytes_to_read = found_pos
-            while bytes_to_read > 0:
-                chunk = src.read(min(CHUNK_SIZE, bytes_to_read))
-                if not chunk:
-                    break
-                img_f.write(chunk)
-                bytes_to_read -= len(chunk)
-                done += len(chunk)
-                if progress:
-                    progress(done, file_size)
+                # 第一步：搬运图片部分 (从 0 到 found_pos)
+                bytes_to_read = found_pos
+                while bytes_to_read > 0:
+                    chunk = src.read(min(CHUNK_SIZE, bytes_to_read))
+                    if not chunk:
+                        break
+                    img_f.write(chunk)
+                    bytes_to_read -= len(chunk)
+                    done += len(chunk)
+                    if progress:
+                        progress(done, file_size)
 
-            # 第二步：搬运压缩包部分 (游标已在 found_pos，把剩余全部搬过去)
-            bytes_to_read = file_size - found_pos
-            while bytes_to_read > 0:
-                chunk = src.read(min(CHUNK_SIZE, bytes_to_read))
-                if not chunk:
-                    break
-                arc_f.write(chunk)
-                bytes_to_read -= len(chunk)
-                done += len(chunk)
-                if progress:
-                    progress(done, file_size)
+                # 第二步：搬运压缩包部分 (游标已在 found_pos，把剩余全部搬过去)
+                bytes_to_read = file_size - found_pos
+                while bytes_to_read > 0:
+                    chunk = src.read(min(CHUNK_SIZE, bytes_to_read))
+                    if not chunk:
+                        break
+                    arc_f.write(chunk)
+                    bytes_to_read -= len(chunk)
+                    done += len(chunk)
+                    if progress:
+                        progress(done, file_size)
+
+            os.replace(tmp_img, img_path)
+            os.replace(tmp_arc, archive_path)
+        except Exception as e:
+            for tmp in (tmp_img, tmp_arc):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            return {'status': 'error', 'error': str(e)}
+        finally:
+            lock.release()
 
         return {'status': 'success', 'ext': found_ext}
     except Exception as e:
@@ -157,6 +260,12 @@ if __name__ == "__main__":
                 print(f"[{file}] 未检测到压缩包特征码，不是图种文件（已跳过）。")
             elif result['status'] == 'skipped_empty':
                 print(f"[{file}] 空文件，已跳过。")
+            elif result['status'] == 'skipped_temp':
+                print(f"[{file}] 临时文件，已跳过。")
+            elif result['status'] == 'skipped_locked':
+                print(f"[{file}] 另一个进程正在分离同一目标，已跳过。")
+            elif result['status'] == 'skipped_nospace':
+                print(f"[{file}] 磁盘空间不足（{result.get('error', '')}），已跳过。")
             elif result['status'] == 'error':
                 print(f"[{file}] 处理出错：{result['error']}")
         print("全部扫描处理完毕！")
